@@ -202,7 +202,7 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
         if (length < 3 * seconds) throw Failure("bài quá ngắn so với độ dài chuyển");
         auto dec = openDecoder(current, input_flag_no_looping, abort);
         if (!dec->can_seek()) throw Failure("không tua được trong file để đọc đuôi bài");
-        const double from = std::max(0.0, length - kTailScanSeconds);
+        const double from = (std::max)(0.0, length - kTailScanSeconds);
         dec->seek(from, abort);
         int64_t frame = (int64_t)std::llround(from * rate);
         int64_t end = -1;
@@ -221,7 +221,7 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
         // 2. which track comes next
         waitForPos(p, mixStart - (int64_t)(kPrepareLeadSeconds * rate));
         const NextTrack next = askNext(current, abort);
-        if (next.handle.is_null()) throw Failure(pfc::string_formatter()._formatter() << "không đoán được bài kế: " << next.why);
+        if (!next.handle.is_valid()) throw Failure(pfc::string_formatter()._formatter() << "không đoán được bài kế: " << next.why);
 
         // 3. its head: skip the leading silence, keep the overlap length plus a little for the resampler
         auto nd = openDecoder(next.handle, input_flag_simpledecode, abort);
