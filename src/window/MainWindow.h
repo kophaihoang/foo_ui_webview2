@@ -227,6 +227,8 @@ private:
     // SetFrameless 先更新 frameless_ 再走 apply 链，拿 frameless_ 比会恒等，
     // 短路守卫就从「幂等」退化成「永不执行」。初值对齐 frameless_ 的默认值。
     bool lastFramelessDwmValue_ = true;
+    // clear window is on: no frame sheet, border, shadow or rounded corners (ApplyClearWindowState)
+    bool clearWindowApplied_ = false;
     bool hasBroadcastWindowState_ = false;
     bool lastBroadcastIsMaximized_ = false;
     bool lastBroadcastIsMinimized_ = false;
@@ -479,6 +481,7 @@ private:
     void ApplyFramelessState(bool frameless);
     void ApplyNativeFrameStrategy(WindowNativeFrameStrategy strategy);
     void ApplyCornerPreferenceState(const std::string& mode);
+    void ApplyClearWindowState(bool clear, bool fullscreen);
     void ResolveBackdropPolicy();
     bool ApplyBackdropPolicyForActivation(bool active, bool forceRefresh);
     void ApplyBackdropEffect(const std::string& effect, bool forceRefresh);

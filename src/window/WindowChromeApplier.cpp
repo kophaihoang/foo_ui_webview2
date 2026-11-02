@@ -117,8 +117,12 @@ WindowChromeApplyResult WindowChromeApplier::Apply(const WindowChromeApplyHooks&
         return result;
     }
 
+    // Clear window: blur-behind with no system backdrop over a transparent WebView (see applyClearWindow)
+    const bool clearWindow = hooks.applyClearWindow && result.effect == "none" &&
+        request.state.useBlurBehind && request.state.transparentBackground;
+
     if (hooks.applyCornerPreference && request.state.cornerPreference != "unsupported" &&
-        !request.state.fullscreen) {
+        !request.state.fullscreen && !clearWindow) {
         hooks.applyCornerPreference(request.state.cornerPreference);
     }
 
@@ -150,7 +154,8 @@ WindowChromeApplyResult WindowChromeApplier::Apply(const WindowChromeApplyHooks&
     // - system → 设置 DWMSBT_AUTO (0)，让 DWM 合成器播放淡出过渡动画
     // 旧逻辑跳过 system 的 DWM 调用，导致 DWM 不知道要淡出，焦点切换时效果瞬变无动画。
     HRESULT backdropHr = S_ApplyBackdropEffect(hooks.hwnd, result.effect);
-    HRESULT blurHr = S_ApplyBlurFallback(hooks.hwnd, shouldUseBlurFallback);
+    // a clear window needs no blur-behind: with no frame sheet behind it the transparent page shows the desktop
+    HRESULT blurHr = S_ApplyBlurFallback(hooks.hwnd, shouldUseBlurFallback && !clearWindow);
 
     // [Chrome Reconciliation] 调用顺序关键：
     // 1. 先切 native frame strategy（style bits），确保 WS_CAPTION 已移除
@@ -165,6 +170,11 @@ WindowChromeApplyResult WindowChromeApplier::Apply(const WindowChromeApplyHooks&
     // 读到的是正确的 backdrop type，而非旧值。
     if (hooks.applyFrameless && !request.state.fullscreen) {
         hooks.applyFrameless(request.state.frameless);
+    }
+
+    // after applyFrameless: a clear window takes the frame extension back off
+    if (hooks.applyClearWindow) {
+        hooks.applyClearWindow(clearWindow, request.state.fullscreen);
     }
 
     if (webViewReady &&

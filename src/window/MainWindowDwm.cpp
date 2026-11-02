@@ -174,6 +174,9 @@ WindowChromeApplyHooks MainWindow::BuildChromeApplyHooks() {
     hooks.applyCornerPreference = [this](const std::string& mode) {
         ApplyCornerPreferenceState(mode);
     };
+    hooks.applyClearWindow = [this](bool clear, bool fullscreen) {
+        ApplyClearWindowState(clear, fullscreen);
+    };
     hooks.afterBackdropApplied = [this]() {
         UpdateDpiDependentSizes();
     };
@@ -574,6 +577,41 @@ void MainWindow::SetCornerPreference(const std::string& mode) {
 
     ApplyResolvedChrome(true);
     MaybeCommitStartupRevealAfterChromeReady("SetCornerPreference");
+}
+
+void MainWindow::ApplyClearWindowState(bool clear, bool fullscreen) {
+    if (!hwnd_ || !IsWindow(hwnd_)) return;
+    constexpr DWORD kCornerPreference = 33;  // DWMWA_WINDOW_CORNER_PREFERENCE
+    constexpr DWORD kBorderColor = 34;       // DWMWA_BORDER_COLOR
+    if (clear) {
+        // No frame extension: nothing of DWM's sheet behind the transparent page, and no shadow
+        // (a borderless window only gets one through the extended frame). Other paths put the
+        // extension back (hidden->visible reset, fullscreen exit); every chrome apply removes it again.
+        MARGINS none = { 0, 0, 0, 0 };
+        S_DwmExtendFrameIntoClientArea(hwnd_, &none);
+        DWORD square = 1;  // DWMWCP_DONOTROUND
+        S_DwmSetWindowAttribute(hwnd_, kCornerPreference, &square, sizeof(square));
+        COLORREF noBorder = 0xFFFFFFFE;  // DWMWA_COLOR_NONE
+        S_DwmSetWindowAttribute(hwnd_, kBorderColor, &noBorder, sizeof(noBorder));
+        if (!clearWindowApplied_) {
+            clearWindowApplied_ = true;
+            SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            LOG("MainWindow: clear window on");
+        }
+        return;
+    }
+    if (!clearWindowApplied_) return;
+    clearWindowApplied_ = false;
+    COLORREF defaultBorder = 0xFFFFFFFF;  // DWMWA_COLOR_DEFAULT
+    S_DwmSetWindowAttribute(hwnd_, kBorderColor, &defaultBorder, sizeof(defaultBorder));
+    // corners came back through applyCornerPreference in this same apply; the frame extension
+    // comes back here (fullscreen keeps none until it exits and restores it itself)
+    if (!fullscreen) {
+        framelessDwmApplied_ = false;
+        ApplyFramelessState(frameless_);
+    }
+    LOG("MainWindow: clear window off");
 }
 
 void MainWindow::ApplyCornerPreferenceState(const std::string& mode) {

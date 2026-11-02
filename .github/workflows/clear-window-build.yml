@@ -1,0 +1,55 @@
+name: Build component (clear-window)
+
+# Builds the x64 component from the clear-window branch and uploads the DLL to install by hand.
+on:
+  push:
+    branches: [clear-window]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone columns_ui-sdk
+        run: |
+          git clone --depth=1 https://github.com/reupen/columns_ui-sdk.git lib/columns_ui-sdk
+          (Get-Content lib/columns_ui-sdk/ui_extension.h) `
+            -replace '\.\./pfc/', '../foobar2000_sdk/pfc/' `
+            -replace '\.\./foobar2000/', '../foobar2000_sdk/foobar2000/' |
+            Set-Content lib/columns_ui-sdk/ui_extension.h
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Install SDK dependencies (for the header generator)
+        working-directory: sdk
+        run: npm ci
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Restore NuGet packages
+        run: nuget restore foo_ui_webview2.sln
+
+      - name: Build
+        run: .\build.ps1 -Config Release -Platform x64 -PlatformToolset v143
+
+      - name: Upload component DLL
+        uses: actions/upload-artifact@v6
+        with:
+          name: foo_ui_webview2-x64
+          path: |
+            bin/Release_x64/foo_ui_webview2.dll
+            bin/Release_x64/WebView2Loader.dll
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-log
+          path: build_log.txt
