@@ -33,7 +33,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build
-        run: msbuild automix\foo_dsp_automix.sln /m /p:Configuration=Release /p:Platform=x64 /v:minimal
+        run: msbuild automix\foo_dsp_automix.sln /m /p:Configuration=Release /p:Platform=x64 /v:minimal "/flp:logfile=build_log.txt;verbosity=normal"
 
       - name: Package component
         shell: pwsh
