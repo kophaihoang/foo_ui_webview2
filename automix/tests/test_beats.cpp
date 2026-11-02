@@ -42,8 +42,7 @@ int main() {
     for (double e : err) mean += e;
     mean /= err.size();
     for (double e : err) worst = std::fmax(worst, std::fabs(e - mean));
-    std::printf("beat offset %.1f ms, jitter %.1f ms
-", mean * 1000, worst * 1000);
+    std::printf("beat offset %.1f ms, jitter %.1f ms\n", mean * 1000, worst * 1000);
     std::fflush(stdout);
     assert(worst < 0.015);
 
