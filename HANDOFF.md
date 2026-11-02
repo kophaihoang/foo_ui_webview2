@@ -23,7 +23,7 @@ Read this whole file before touching anything. It is written for Claude Code pic
 The theme was developed in a shallow clone of the upstream repo, so its history can't be pushed as-is. The branch `theme-clear-glass` in the user's fork holds:
 
 - a snapshot of the whole theme tree (upstream 0.3.0 plus all our work), and
-- `patches/`: the 17 commits as `git format-patch` files on top of upstream commit `1886839` ("feat: 发布默认主题 0.3.0").
+- `patches/`: the 16 commits as `git format-patch` files on top of upstream commit `1886839` ("feat: 发布默认主题 0.3.0").
 
 Better setup, if the user agrees: fork `NereaFantasia/foo-webview-default-theme`, check out `1886839`, `git am patches/*.patch` onto a branch `clear-glass`, and push. Then you have real history.
 
