@@ -26,7 +26,7 @@
 #include "mix.h"
 #include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.2.0",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.2.1",
     "DJ-style transitions between tracks.\n"
     "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
     "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
@@ -379,6 +379,7 @@ public:
         if (!m_rendering) {
             if (start > p.renderStart || start + (int64_t)n <= p.renderStart) return true;
             m_rendering = true;
+            log("bắt đầu chuyển bài");
             m_outUsed = 0;
             keep = (size_t)(p.renderStart - start);
         }
@@ -436,6 +437,7 @@ private:
         m_channelConfig = chunk.get_channel_config();
         if (track.is_valid()) {
             m_plan = std::make_shared<Plan>();
+            FB2K_console_formatter() << "AutoMix: đang phân tích \"" << track << "\" để chuẩn bị chuyển bài";
             m_worker = std::thread(prepare, m_plan, track, m_rate, m_channels, m_channelConfig);
         }
     }
