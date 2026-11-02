@@ -4,7 +4,11 @@ name: Build component (clear-window)
 on:
   push:
     branches: [clear-window]
+    paths-ignore: ['.github/**']
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -46,6 +50,15 @@ jobs:
           path: |
             bin/Release_x64/foo_ui_webview2.dll
             bin/Release_x64/WebView2Loader.dll
+
+      # also commit the DLL to the clear-window-dll branch, so it can be fetched over git
+      - name: Publish DLL to the clear-window-dll branch
+        shell: bash
+        run: |
+          mkdir -p ../dll && cp bin/Release_x64/foo_ui_webview2.dll bin/Release_x64/WebView2Loader.dll ../dll/
+          cd ../dll && git init -q && git checkout -q -b clear-window-dll
+          git add . && git -c user.name=ci -c user.email=ci@local commit -q -m "DLL from ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" clear-window-dll
 
       - name: Upload build log
         if: failure()

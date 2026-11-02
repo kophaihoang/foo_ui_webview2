@@ -1,0 +1,27 @@
+name: Publish last clear-window DLL
+
+# One-off: puts the DLL from an already finished build on the clear-window-dll branch.
+on:
+  push:
+    branches: [clear-window]
+    paths: ['.github/workflows/publish-last-dll.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: foo_ui_webview2-x64
+          run-id: 41393242133
+          github-token: ${{ github.token }}
+          path: dll
+      - name: Push
+        run: |
+          cd dll && git init -q && git checkout -q -b clear-window-dll
+          git add . && git -c user.name=ci -c user.email=ci@local commit -q -m "DLL from run 41393242133"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" clear-window-dll
