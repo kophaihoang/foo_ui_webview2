@@ -19,7 +19,9 @@ int main() {
         const double inBeat = std::fmod(t, beat);
         const int n = (int)(t / beat);
         double s = 0;
-        if (inBeat < 0.15) s += (n % 4 == 0 ? 0.9 : 0.5) * std::exp(-inBeat * 30) * std::sin(2 * 3.14159265 * 60 * inBeat);
+        const double kick = n % 4 == 0 ? 0.9 : 0.5;
+        if (inBeat < 0.15) s += kick * std::exp(-inBeat * 30) * std::sin(2 * 3.14159265 * 60 * inBeat);
+        if (inBeat < 0.005) s += kick * 0.6 * (rand() / (double)RAND_MAX * 2 - 1);  // the beater's click
         const double off = std::fmod(t + beat / 2, beat);
         if (off < 0.03) s += 0.15 * std::exp(-off * 150) * (rand() / (double)RAND_MAX * 2 - 1);
         a[i * ch] = a[i * ch + 1] = (float)s;
@@ -45,6 +47,7 @@ int main() {
     std::printf("beat offset %.1f ms, jitter %.1f ms\n", mean * 1000, worst * 1000);
     std::fflush(stdout);
     assert(worst < 0.015);
+    assert(std::fabs(mean) < 0.03);  // on the kicks, not the off-beat hi-hats
 
     for (size_t i = 1; i < b.downbeats.size(); ++i) assert(b.downbeats[i] - b.downbeats[i - 1] == 4);
 

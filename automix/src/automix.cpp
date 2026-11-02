@@ -20,14 +20,11 @@
 #include <memory>
 #include <stdexcept>
 #include <thread>
-#include <type_traits>
 #include <vector>
 
 #include "beats.h"
 #include "mix.h"
 #include "transition.h"
-
-static_assert(std::is_same_v<audio_sample, float>, "the mixing code assumes 32-bit float samples");
 
 DECLARE_COMPONENT_VERSION("AutoMix", "0.2.0",
     "DJ-style transitions between tracks.\n"
@@ -168,7 +165,7 @@ struct Plan {
     metadb_handle_ptr next;
     int64_t renderStart = 0;  // frame of the current track where `out` takes over
     int64_t newResume = 0;  // frame of the next track (its own rate) where its live playback carries on
-    std::vector<audio_sample> out;  // the rendered transition, current track's rate and channels
+    std::vector<float> out;  // the rendered transition, current track's rate and channels
 };
 
 void waitForPos(Plan& p, int64_t target) {
@@ -186,15 +183,17 @@ input_decoder::ptr openDecoder(const metadb_handle_ptr& track, unsigned flags, a
     return dec;
 }
 
-std::vector<audio_sample> resample(std::vector<audio_sample> const& in, unsigned channels, unsigned channelConfig,
+// Analysis and rendering work in float (half the memory); the player's audio_sample is converted at the edges.
+std::vector<float> resample(std::vector<float> const& in, unsigned channels, unsigned channelConfig,
     unsigned from, unsigned to, const metadb_handle_ptr& track) {
     service_ptr_t<dsp> rs;
     if (!resampler_entry::g_create(rs, from, to, 1.0f))
         throw Failure(pfc::string_formatter()._formatter() << "không có bộ đổi sample rate cho " << from << " → " << to << " Hz");
     dsp_chunk_list_impl list;
-    list.insert_item(0, in.size())->set_data(in.data(), in.size() / channels, channels, from, channelConfig);
+    const std::vector<audio_sample> wide(in.begin(), in.end());
+    list.insert_item(0, wide.size())->set_data(wide.data(), wide.size() / channels, channels, from, channelConfig);
     rs->run(&list, track, dsp::END_OF_TRACK | dsp::FLUSH);
-    std::vector<audio_sample> out;
+    std::vector<float> out;
     for (size_t i = 0; i < list.get_count(); ++i) {
         const audio_chunk* c = list.get_item(i);
         if (c->get_srate() != to || c->get_channels() != channels) throw Failure("bộ đổi sample rate trả về sai định dạng");
@@ -236,7 +235,7 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
             old.data.insert(old.data.end(), chunk.get_data(), chunk.get_data() + chunk.get_sample_count() * channels);
         }
         dec.release();
-        for (auto& x : old.data) x *= curScale;
+        for (auto& x : old.data) x *= (float)curScale;
         const size_t audible = audibleEnd(old.data.data(), old.data.size() / channels, channels, threshold);
         if (audible == 0) throw Failure("60 giây cuối bài im lặng hoàn toàn");
         const int64_t end = old.start + (int64_t)audible;
@@ -280,7 +279,7 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
         nd.release();
         if (skip < 0) throw Failure("bài kế im lặng hoàn toàn");
         if (head.end() < skip + std::llround(s.seconds * head.rate)) throw Failure("bài kế ngắn hơn độ dài chuyển");
-        for (auto& x : head.data) x *= next.scale;
+        for (auto& x : head.data) x *= (float)next.scale;
 
         // 4. render the transition
         const Resampler rs = [&](const std::vector<float>& v, unsigned a, unsigned b) {
@@ -385,7 +384,7 @@ public:
         }
         const size_t total = p.out.size() / channels;
         const size_t take = (std::min)(n - keep, total - m_outUsed);
-        memcpy(chunk->get_data() + keep * channels, p.out.data() + m_outUsed * channels, take * channels * sizeof(audio_sample));
+        std::copy_n(p.out.data() + m_outUsed * channels, take * channels, chunk->get_data() + keep * channels);
         m_outUsed += take;
         if (keep + take < n) chunk->set_sample_count(keep + take);
         return keep + take > 0;
@@ -412,11 +411,12 @@ private:
         if (m_plan && m_rendering) {
             if (track.is_valid() && track == m_plan->next) {
                 // whatever of the rendered transition is left goes out before this track's first chunk
-                const std::vector<audio_sample>& out = m_plan->out;
+                const std::vector<float>& out = m_plan->out;
                 const size_t total = out.size() / m_channels, piece = m_rate / 2;
                 for (size_t at = m_outUsed; at < total; at += piece) {
                     const size_t cnt = (std::min)(piece, total - at);
-                    insert_chunk(cnt * m_channels)->set_data(out.data() + at * m_channels, cnt, m_channels, m_rate, m_channelConfig);
+                    const std::vector<audio_sample> wide(out.data() + at * m_channels, out.data() + (at + cnt) * m_channels);
+                    insert_chunk(wide.size())->set_data(wide.data(), cnt, m_channels, m_rate, m_channelConfig);
                 }
                 m_dropNew = m_plan->newResume;
                 log("đã chuyển bài");
