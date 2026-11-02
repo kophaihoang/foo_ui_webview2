@@ -24,16 +24,27 @@ jobs:
         with:
           arch: x64
 
-      - name: Self-check (mix math)
+      - name: Fetch qm-dsp and SoundTouch
+        run: automix\fetch-libs.ps1
+
+      # output also goes to build_log.txt, which is published to the automix-log branch on failure
+      - name: Self-checks (mix math, beat tracking)
         working-directory: automix/tests
         run: |
-          cl /nologo /EHsc /std:c++20 /I..\src test_mix.cpp
+          $log = "$env:GITHUB_WORKSPACE\build_log.txt"
+          $q = '..\ext\qm-dsp'
+          $qm = "$q\dsp\onsets\DetectionFunction.cpp $q\dsp\phasevocoder\PhaseVocoder.cpp $q\dsp\transforms\FFT.cpp $q\dsp\tempotracking\TempoTrackV2.cpp $q\dsp\tempotracking\DownBeat.cpp $q\dsp\rateconversion\Decimator.cpp $q\maths\MathUtilities.cpp $q\maths\KLDivergence.cpp $q\ext\kissfft\kiss_fft.c $q\ext\kissfft\tools\kiss_fftr.c"
+          cmd /c "cl /nologo /EHsc /std:c++20 /I..\src test_mix.cpp 2>&1" | Tee-Object -FilePath $log -Append
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          .\test_mix.exe
+          .\test_mix.exe *>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cmd /c "cl /nologo /EHsc /std:c++20 /O2 /D_USE_MATH_DEFINES /Dkiss_fft_scalar=double /I..\src /I$q /I$q\ext\kissfft /I$q\ext\kissfft\tools test_beats.cpp ..\src\beats.cpp $qm 2>&1" | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\test_beats.exe *>&1 | Tee-Object -FilePath $log -Append
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build
-        run: msbuild automix\foo_dsp_automix.sln /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal "/flp:logfile=build_log.txt;verbosity=normal"
+        run: msbuild automix\foo_dsp_automix.sln /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal "/flp:logfile=build_log.txt;verbosity=normal;append"
 
       - name: Package component
         shell: pwsh
