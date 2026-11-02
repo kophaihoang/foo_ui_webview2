@@ -1,0 +1,1010 @@
+From 05042be49b325d32abd8e99f11fe556bdb41a1d4 Mon Sep 17 00:00:00 2001
+From: LVH <kophaileviethoang@gmail.com>
+Date: Sun, 1 Nov 2026 17:53:48 +0000
+Subject: [PATCH 04/16] Cover glides between all views, side cards slide out
+ from behind the cover, drag a cover to reorder
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/Coverflow.module.css |  54 ++++++
+ src/immersive/coverflow/Coverflow.tsx        | 168 ++++++++++++++++++-
+ src/immersive/coverflow/dropUpcoming.ts      |  96 +++++++++++
+ src/immersive/coverflow/engine.ts            |  11 +-
+ src/immersive/coverflow/menuTarget.ts        |   6 +-
+ src/immersive/dial/DialCover.tsx             |   5 +
+ src/immersive/page/PresetsScene.tsx          |   7 +-
+ src/immersive/page/viewCycle.ts              |  76 ++++-----
+ src/immersive/scene/coverflowItems.ts        |   5 +-
+ src/immersive/scene/sceneTransition.css      |  21 +++
+ src/immersive/scene/shufflePlan.ts           | 148 +++++++++++-----
+ src/theme/ThemeRoot.tsx                      |   9 +-
+ 12 files changed, 507 insertions(+), 99 deletions(-)
+ create mode 100644 src/immersive/coverflow/dropUpcoming.ts
+
+diff --git a/src/immersive/coverflow/Coverflow.module.css b/src/immersive/coverflow/Coverflow.module.css
+index cc213a0..b5e396d 100644
+--- a/src/immersive/coverflow/Coverflow.module.css
++++ b/src/immersive/coverflow/Coverflow.module.css
+@@ -92,3 +92,57 @@
+ .card[aria-selected='true']:hover .play {
+   opacity: 1;
+ }
++
++/* pick up a song: the card being dragged stays as a faint outline in its slot, a lifted copy follows the
++   pointer and a bright bar marks the gap it will land in */
++.card[data-dragging] {
++  filter: opacity(0.25) saturate(0.4);
++}
++
++.ghost {
++  position: absolute;
++  z-index: 1000;
++  overflow: hidden;
++  border-radius: 10px;
++  background: var(--bg-surface);
++  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
++  transform: scale(1.06) rotate(-2deg);
++  opacity: 0.94;
++  pointer-events: none;
++  animation: ghost-lift var(--motion-faster) var(--curveDecelerateMid);
++}
++
++.ghost img {
++  width: 100%;
++  height: 100%;
++  object-fit: cover;
++}
++
++@keyframes ghost-lift {
++  from {
++    transform: scale(1) rotate(0deg);
++    opacity: 1;
++  }
++}
++
++.dropBar {
++  position: absolute;
++  z-index: 999;
++  width: 4px;
++  margin-left: -2px;
++  border-radius: 2px;
++  background: #fff;
++  box-shadow:
++    0 0 12px rgba(255, 255, 255, 0.9),
++    0 0 28px rgba(255, 255, 255, 0.5);
++  pointer-events: none;
++  transition:
++    left 120ms ease-out,
++    top 120ms ease-out;
++}
++
++/* the cover images must not start the browser's own image drag: it would cancel the pick-up gesture */
++.card img {
++  -webkit-user-drag: none;
++  user-select: none;
++}
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index cb2fe17..a059cb6 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -27,6 +27,7 @@ import { sceneStateAtom } from '../scene/sceneActions.ts';
+ import { useSceneActions, useSceneFrame } from '../scene/sceneContext.ts';
+ import { useCoverHolder } from '../scene/useCoverHolder.ts';
+ import styles from './Coverflow.module.css';
++import { dropUpcoming } from './dropUpcoming.ts';
+ import { CoverflowCard, coverRequestSizes } from './CoverflowCard.tsx';
+ import { CoverflowMenu } from './CoverflowMenu.tsx';
+ import { createCoverflowEngine, type EngineCard, type EngineClock } from './engine.ts';
+@@ -164,6 +165,8 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     if (plan) await perform(plan);
+   };
+   const activate = (key: string) => {
++    // the click that ends a drag is not a tap on the card
++    if (justDragged.current) return;
+     const at = store.get(coverflowItemsAtom).findIndex((item) => item.key === key);
+     if (at < 0) return;
+     if (at === selectedNow()) void play(true);
+@@ -282,6 +285,99 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+   useEffect(() => () => engine.dispose(), [engine]);
+   // 进入模式后将焦点转移至舞台容器以拦截方向键
+   useLayoutEffect(() => root.current?.focus({ preventScroll: true }), []);
++
++  // ── pick up a song: press (or double-tap and hold on a touchpad) a card and drag it to a new spot ──
++  interface DragView {
++    readonly key: string;
++    readonly x: number;
++    readonly y: number;
++    readonly width: number;
++    readonly height: number;
++    readonly grabX: number;
++    readonly grabY: number;
++    readonly src: string | null;
++    readonly bar: { readonly x: number; readonly top: number; readonly height: number } | null;
++  }
++  const [drag, setDrag] = useState<DragView | null>(null);
++  const press = useRef<{ key: string; x: number; y: number; id: number; element: HTMLElement } | null>(
++    null,
++  );
++  const dragging = useRef<{ key: string; gap: number | null; x: number; y: number } | null>(null);
++  const justDragged = useRef(false);
++  const edge = useRef(0);
++
++  const keyOfElement = (element: Element): string | null => {
++    for (const [key, card] of elements.current) if (card === element) return key;
++    return null;
++  };
++  /** The gap the pointer is over, right of the playing song only, and where to draw the marker */
++  const gapAt = (x: number, skip: string): Pick<DragView, 'bar'> & { gap: number | null } => {
++    const box = root.current?.getBoundingClientRect();
++    const list = store.get(coverflowItemsAtom);
++    const at = currentIndexOf(list);
++    const cards: { index: number; rect: DOMRect }[] = [];
++    list.forEach((item, index) => {
++      const element = elements.current.get(item.key);
++      if (element && item.key !== skip) cards.push({ index, rect: element.getBoundingClientRect() });
++    });
++    cards.sort((a, b) => a.index - b.index);
++    const centerOf = (rect: DOMRect) => rect.left + rect.width / 2;
++    const after = cards.find((card) => x < centerOf(card.rect));
++    const gap = after ? after.index : list.length;
++    if (!box || gap <= at) return { gap: null, bar: null };
++    const before = [...cards].reverse().find((card) => card.index < gap);
++    const playing = elements.current.get(list[at]?.key ?? '')?.getBoundingClientRect();
++    const barX =
++      after && before
++        ? (centerOf(after.rect) + centerOf(before.rect)) / 2
++        : after
++          ? after.rect.left
++          : before
++            ? before.rect.right + 12
++            : x;
++    const top = playing ? playing.top : box.top + box.height * 0.25;
++    const height = playing ? playing.height : box.height * 0.5;
++    return { gap, bar: { x: barX - box.left, top: top - box.top, height } };
++  };
++  const moveDrag = (x: number, y: number) => {
++    const state = dragging.current;
++    const box = root.current?.getBoundingClientRect();
++    if (!state || !box) return;
++    state.x = x;
++    state.y = y;
++    const { gap, bar } = gapAt(x, state.key);
++    state.gap = gap;
++    edge.current = x > box.right - 80 ? 1 : x < box.left + 80 ? -1 : 0;
++    setDrag((view) => (view ? { ...view, x: x - box.left, y: y - box.top, bar } : view));
++  };
++  const endDrag = (drop: boolean) => {
++    const state = dragging.current;
++    press.current = null;
++    if (!state) return;
++    dragging.current = null;
++    edge.current = 0;
++    const element = elements.current.get(state.key);
++    if (element) delete element.dataset.dragging;
++    setDrag(null);
++    justDragged.current = true;
++    setTimeout(() => (justDragged.current = false), 0);
++    const list = store.get(coverflowItemsAtom);
++    const item = list.find((entry) => entry.key === state.key);
++    if (drop && item && state.gap !== null) void dropUpcoming(store, list, item, state.gap);
++  };
++  // near an edge the covers scroll on by themselves, so a song can travel far
++  useEffect(() => {
++    if (!drag) return;
++    const timer = setInterval(() => {
++      const state = dragging.current;
++      if (!state || edge.current === 0) return;
++      step(edge.current);
++      requestAnimationFrame(() => moveDrag(state.x, state.y));
++    }, 320);
++    return () => clearInterval(timer);
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [drag !== null]);
++
+   // keep sideways swipes for the covers: stop the browser from treating them as back/forward gestures
+   useEffect(() => {
+     const element = root.current;
+@@ -318,7 +414,56 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+         data-key-pass
+         // empty space: one tap glides back to the playing song (a double tap switches view, see ImmersiveView)
+         onClick={(event) => {
+-          if (onEmpty(event.target)) sceneActions.browse(null);
++          if (!justDragged.current && onEmpty(event.target)) sceneActions.browse(null);
++        }}
++        onPointerDown={(event) => {
++          if (event.button !== 0 || leaving) return;
++          const card = event.target instanceof Element ? event.target.closest(`.${styles.card}`) : null;
++          const key = card ? keyOfElement(card) : null;
++          if (!card || !key) return;
++          press.current = {
++            key,
++            x: event.clientX,
++            y: event.clientY,
++            id: event.pointerId,
++            element: card as HTMLElement,
++          };
++        }}
++        onPointerMove={(event) => {
++          const pressed = press.current;
++          if (!pressed || pressed.id !== event.pointerId) return;
++          if (dragging.current) {
++            moveDrag(event.clientX, event.clientY);
++            return;
++          }
++          if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) < 8) return;
++          const item = store.get(coverflowItemsAtom).find((entry) => entry.key === pressed.key);
++          const box = root.current?.getBoundingClientRect();
++          if (!item || item.kind === 'current' || !box) {
++            press.current = null;
++            return;
++          }
++          root.current?.setPointerCapture(event.pointerId);
++          const rect = pressed.element.getBoundingClientRect();
++          pressed.element.dataset.dragging = '';
++          dragging.current = { key: pressed.key, gap: null, x: event.clientX, y: event.clientY };
++          setDrag({
++            key: pressed.key,
++            x: event.clientX - box.left,
++            y: event.clientY - box.top,
++            width: rect.width,
++            height: rect.height,
++            grabX: pressed.x - rect.left,
++            grabY: pressed.y - rect.top,
++            src: pressed.element.querySelector('img')?.src ?? null,
++            bar: null,
++          });
++          moveDrag(event.clientX, event.clientY);
++        }}
++        onPointerUp={() => endDrag(true)}
++        onPointerCancel={() => endDrag(false)}
++        onLostPointerCapture={() => {
++          if (dragging.current) endDrag(true);
+         }}
+         onWheel={(event: WheelEvent) => {
+           // two-finger swipe on a touchpad: sideways swipes move the covers too (right = next)
+@@ -349,6 +494,27 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+             />
+           );
+         })}
++        {drag?.bar && (
++          <span
++            className={styles.dropBar}
++            style={{ left: drag.bar.x, top: drag.bar.top, height: drag.bar.height }}
++            aria-hidden
++          />
++        )}
++        {drag && (
++          <div
++            className={styles.ghost}
++            style={{
++              left: drag.x - drag.grabX,
++              top: drag.y - drag.grabY,
++              width: drag.width,
++              height: drag.height,
++            }}
++            aria-hidden
++          >
++            {drag.src && <img src={drag.src} alt="" draggable={false} />}
++          </div>
++        )}
+       </div>
+       {/* 脱离列表容器渲染，阻断菜单内部点击与滚轮事件冒泡至封面流 */}
+       {menu && <CoverflowMenu target={menu} onClose={() => setMenu(null)} />}
+diff --git a/src/immersive/coverflow/dropUpcoming.ts b/src/immersive/coverflow/dropUpcoming.ts
+new file mode 100644
+index 0000000..c5dbbc8
+--- /dev/null
++++ b/src/immersive/coverflow/dropUpcoming.ts
+@@ -0,0 +1,96 @@
++import { fb } from 'foo-webview-sdk/bridge';
++import { settle } from '../../host/hostCall.ts';
++import type { Store } from '../../kit/store.ts';
++import { queueViewAtom } from '../../playback/queue/queueState.ts';
++import type { CoverflowItem } from '../scene/coverflowItems.ts';
++import { activeShufflePlan, shufflePlanAtom } from '../scene/shufflePlan.ts';
++
++/**
++ * "Pick up a song": a card dragged in the coverflow and dropped right of the playing song plays at the spot
++ * it was dropped. `items` is the coverflow's list; the drop lands in the gap just before `items[gap]`
++ * (`gap === items.length` is the very end). Only gaps right of the playing song count.
++ *
++ * With the shuffle plan running, songs ahead of the plan are reordered in the plan itself and the queue
++ * follows. Without it (list order), the queue is the only thing that can be reordered: the song goes into the
++ * queue, at the drop spot or at the queue's end when dropped among the playlist's own songs.
++ */
++export async function dropUpcoming(
++  store: Store,
++  items: readonly CoverflowItem[],
++  dragged: CoverflowItem,
++  gap: number,
++): Promise<void> {
++  const currentAt = items.findIndex((item) => item.kind === 'current');
++  if (currentAt < 0 || gap <= currentAt || dragged.kind === 'current' || !dragged.track) return;
++  const from = items.indexOf(dragged);
++  if (from === gap || from === gap - 1) return;
++  const entries = store.get(queueViewAtom).entries;
++  // queue slots before the gap, not counting the dragged song itself
++  const queuedBefore = items
++    .slice(currentAt + 1, gap)
++    .filter((item) => item.kind === 'queued' && item !== dragged).length;
++  const queueRef = (item: CoverflowItem): string | { playlistGuid: string; item: number } =>
++    (item.kind === 'earlier' || item.kind === 'upNext' || item.kind === 'planned') &&
++    item.row !== null
++      ? { playlistGuid: item.guid, item: item.row }
++      : (item.track?.path ?? '');
++
++  const plan = store.get(shufflePlanAtom);
++  const service = activeShufflePlan();
++  if (plan && service) {
++    const next = items[gap];
++    const prev = items[gap - 1];
++    const planIndex =
++      next?.kind === 'planned'
++        ? next.position - plan.cursor
++        : prev?.kind === 'planned'
++          ? prev.position - plan.cursor + 1
++          : null;
++    // the plan's next song sits in the queue; dragging it is moving the plan's first song
++    const planHead = plan.order[plan.cursor];
++    const headHandle =
++      planHead === undefined
++        ? null
++        : typeof planHead === 'number'
++          ? plan.tracks.get(planHead)?.handle
++          : planHead.track.handle;
++    const position =
++      dragged.kind === 'planned'
++        ? dragged.position
++        : dragged.kind === 'queued' && dragged.track.handle === headHandle
++          ? plan.cursor
++          : null;
++    if (position !== null) {
++      const target = planIndex ?? 0;
++      service.move(position, position - plan.cursor < target ? target - 1 : target);
++      return;
++    }
++    if (planIndex !== null) {
++      // a song from the history or the queue joins the plan
++      if (dragged.kind === 'queued') {
++        const index = entries.findIndex((entry) => entry.key === dragged.entry);
++        if (index >= 0) await settle(() => fb.queue.remove(index));
++      }
++      const row =
++        (dragged.kind === 'earlier' || dragged.kind === 'upNext') && dragged.guid === plan.guid
++          ? dragged.row
++          : null;
++      service.insert(row ?? { path: dragged.track.path, track: dragged.track }, planIndex);
++      return;
++    }
++  }
++
++  // the queue: reorder an entry, or put the song in at the drop spot (the end of the queue at most)
++  const slot = Math.min(queuedBefore, entries.length);
++  if (dragged.kind === 'queued') {
++    const index = entries.findIndex((entry) => entry.key === dragged.entry);
++    if (index < 0) return;
++    const order = entries.map((_, i) => i).filter((i) => i !== index);
++    order.splice(Math.min(slot, order.length), 0, index);
++    await settle(() => fb.queue.setContents(order.map((queueIndex) => ({ queueIndex }))));
++    return;
++  }
++  const ref = queueRef(dragged);
++  if (ref === '') return;
++  await settle(() => fb.queue.insertNext([ref], slot));
++}
+diff --git a/src/immersive/coverflow/engine.ts b/src/immersive/coverflow/engine.ts
+index 45e7906..e245189 100644
+--- a/src/immersive/coverflow/engine.ts
++++ b/src/immersive/coverflow/engine.ts
+@@ -5,11 +5,9 @@ import {
+   enteringPose,
+   entryEnd,
+   entryProgress,
+-  entryRank,
+   entryTilt,
+   exitFactor,
+   fadeInFactor,
+-  offscreenOffset,
+ } from './entrance.ts';
+ import { CARRY, glideAt, glideDone, glideVelocity, startGlide, type Glide } from './glide.ts';
+ import { DIM_SHADE, RENDER_RADIUS, slotAt } from './slots.ts';
+@@ -145,8 +143,10 @@ export function createCoverflowEngine(
+       const elapsed = now - intro.start;
+       if (intro.fade) factor = fadeInFactor(elapsed);
+       else {
+-        const from = offscreenOffset(geometry.width, geometry.cover, pose.size);
+-        pose = enteringPose(pose, entryProgress(rank, elapsed), from, entryTilt(rank, elapsed));
++        // the side cards slide out from behind the playing cover, nearest first
++        const progress = entryProgress(rank, elapsed);
++        pose = enteringPose(pose, progress, 0, entryTilt(rank, elapsed));
++        factor = Math.min(1, progress * 1.6);
+       }
+     }
+     if (outro) factor *= card.current ? 0 : exitFactor(now - outro.start);
+@@ -267,10 +267,9 @@ export function createCoverflowEngine(
+     },
+     enter(center) {
+       if (!visible) return;
+-      const first = Math.min(...cards.map((card) => card.index));
+       const ranks = new Map<string, number>();
+       for (const card of cards) {
+-        if (card.index !== center) ranks.set(card.key, entryRank(card.index, first, center));
++        if (card.index !== center) ranks.set(card.key, Math.abs(card.index - center) - 1);
+       }
+       const now = clock.now();
+       intro = {
+diff --git a/src/immersive/coverflow/menuTarget.ts b/src/immersive/coverflow/menuTarget.ts
+index c081065..5eecab0 100644
+--- a/src/immersive/coverflow/menuTarget.ts
++++ b/src/immersive/coverflow/menuTarget.ts
+@@ -28,14 +28,14 @@ export function menuTargetOf(
+       ? { key: `current:${track.handle}`, kind: 'current', number: 0, track, row: null }
+       : item.kind === 'queued'
+         ? { key: item.entry, kind: 'queued', number: nth, track, row: null }
+-        : item.kind === 'played'
++        : item.kind === 'played' || (item.kind === 'planned' && item.row === null)
+           ? { key: item.key, kind: 'review', number: nth, track, row: null }
+           : {
+               key: item.key,
+               kind: item.kind === 'earlier' ? 'earlier' : 'upnext',
+-              number: item.row + 1,
++              number: (item.row ?? 0) + 1,
+               track,
+-              row: item.row,
++              row: item.row ?? null,
+             };
+   return { itemKey: item.key, menu: { at, anchor, rows: [anchor], play } };
+ }
+diff --git a/src/immersive/dial/DialCover.tsx b/src/immersive/dial/DialCover.tsx
+index 11fc09b..3771c3c 100644
+--- a/src/immersive/dial/DialCover.tsx
++++ b/src/immersive/dial/DialCover.tsx
+@@ -5,6 +5,8 @@ import { immersiveCoverAtom } from '../../covers/immersiveCover.ts';
+ import { FadeImage } from '../../kit/FadeImage.tsx';
+ import { useViewServices } from '../page/viewServices.ts';
+ import { cycleFromBlueprint } from '../page/viewCycle.ts';
++import { SCENE_COVER_LAYER } from '../scene/coverHolders.ts';
++import { useCoverHolder } from '../scene/useCoverHolder.ts';
+ import styles from './DialCover.module.css';
+ 
+ export interface DialCoverProps {
+@@ -22,10 +24,13 @@ export function DialCover({ box, guard }: DialCoverProps) {
+   const cover = useAtomValueRawSync(immersiveCoverAtom);
+   const services = useViewServices();
+   const store = useStore();
++  // the same shared name as the covers of the other views, so a view switch glides the cover across
++  const holder = useCoverHolder(SCENE_COVER_LAYER);
+   const url = cover.status === 'missing' ? null : cover.url;
+   const { token } = cover;
+   return (
+     <div
++      ref={holder}
+       className={styles.cover}
+       style={box}
+       data-decor-guard={guard}
+diff --git a/src/immersive/page/PresetsScene.tsx b/src/immersive/page/PresetsScene.tsx
+index a7a4236..45409bc 100644
+--- a/src/immersive/page/PresetsScene.tsx
++++ b/src/immersive/page/PresetsScene.tsx
+@@ -42,11 +42,14 @@ function useBox() {
+   useLayoutEffect(() => {
+     const element = ref.current;
+     if (!element) return;
+-    const observer = new ResizeObserver(() => {
++    const measure = () => {
+       const width = Math.round(element.clientWidth);
+       const height = Math.round(element.clientHeight);
+       setBox((last) => (last.width === width && last.height === height ? last : { width, height }));
+-    });
++    };
++    // measure right away: a view switch captures the new scene in the same frame it mounts
++    measure();
++    const observer = new ResizeObserver(measure);
+     observer.observe(element);
+     return () => observer.disconnect();
+   }, []);
+diff --git a/src/immersive/page/viewCycle.ts b/src/immersive/page/viewCycle.ts
+index 040059a..d03b39f 100644
+--- a/src/immersive/page/viewCycle.ts
++++ b/src/immersive/page/viewCycle.ts
+@@ -1,5 +1,8 @@
+ import type { Store } from '../../kit/store.ts';
++import { flushSync } from 'react-dom';
+ import { reducedMotionAtom } from '../../motion/reducedMotion.ts';
++import { CURVE, DURATION_MS } from '../../motion/timing.ts';
++import { GLIDE_MS, GLIDE_SPEED, TRANSITION_ATTRIBUTE } from '../scene/sceneTransition.ts';
+ import { browserSceneTransition, forceSceneMode, sceneStateAtom } from '../scene/sceneActions.ts';
+ import type { SceneMode } from '../scene/sceneState.ts';
+ import { chooseImmersiveScene, immersiveSceneAtom } from './immersivePrefs.ts';
+@@ -7,8 +10,7 @@ import { chooseImmersiveScene, immersiveSceneAtom } from './immersivePrefs.ts';
+ /**
+  * One-tap view cycle: Blueprint → Coverflow → Lyrics → Blueprint.
+  * Blueprint is the `paper` scene; Coverflow and Lyrics are the `presets` scene with mode `coverflow` / `none`.
+- * Coverflow → Lyrics stays inside the presets scene and uses its own view transition; the two scene swaps
+- * cross-fade the whole view so every step feels the same.
++ * Every step glides the cover from where it is to where it goes; the rest of the view cross-fades.
+  */
+ let enterPresetsAs: SceneMode | null = null;
+ let swapping = false;
+@@ -20,54 +22,50 @@ export function takePresetsEntryMode(): SceneMode | null {
+   return mode;
+ }
+ 
+-const OUT_MS = 170;
+-const IN_MS = 320;
+-const EASE_OUT = 'cubic-bezier(0.4, 0, 1, 1)';
+-const EASE_IN = 'cubic-bezier(0.1, 0.9, 0.2, 1)';
+-
+-const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+-
+-/** Fade the view out, swap the scene, let the new scene measure itself, then fade it back in */
+-async function fadeSwap(store: Store, update: () => void): Promise<void> {
+-  const content = document.querySelector<HTMLElement>('[data-immersive-content]');
+-  if (!content || store.get(reducedMotionAtom) || document.visibilityState !== 'visible') {
++/**
++ * Swap scenes inside a view transition: the cover carries the shared name in both scenes (Blueprint's dial
++ * cover, the coverflow's playing card, the lyrics cover), so the browser glides it from one spot to the
++ * other while the rest of the view cross-fades under it. Same timing as the scene's own transitions.
++ */
++function morphSwap(store: Store, update: () => void): void {
++  const doc = document;
++  const content = doc.querySelector<HTMLElement>('[data-immersive-content]');
++  if (
++    !doc.startViewTransition ||
++    !content ||
++    store.get(reducedMotionAtom) ||
++    doc.visibilityState !== 'visible'
++  ) {
+     update();
+     return;
+   }
+   if (swapping) return;
+   swapping = true;
++  const root = doc.documentElement;
++  root.style.setProperty('--scene-glide-duration', `${GLIDE_MS}ms`);
++  root.style.setProperty('--scene-glide-easing', CURVE.pointToPoint.timing);
++  root.style.setProperty('--scene-fade-duration', `${Math.round(DURATION_MS.faster / GLIDE_SPEED)}ms`);
++  root.style.setProperty('--scene-exit-duration', `${Math.round(DURATION_MS.fast / GLIDE_SPEED)}ms`);
++  root.dataset[TRANSITION_ATTRIBUTE] = '';
++  content.style.viewTransitionName = 'scene-body';
++  const done = () => {
++    content.style.viewTransitionName = '';
++    delete root.dataset[TRANSITION_ATTRIBUTE];
++    swapping = false;
++  };
+   try {
+-    await content
+-      .animate(
+-        [
+-          { opacity: 1, transform: 'scale(1)', filter: 'blur(0px)' },
+-          { opacity: 0, transform: 'scale(0.985)', filter: 'blur(6px)' },
+-        ],
+-        { duration: OUT_MS, easing: EASE_OUT, fill: 'forwards' },
+-      )
+-      .finished.catch(() => {});
++    const transition = doc.startViewTransition(() => flushSync(update));
++    transition.ready.catch(() => {});
++    transition.finished.then(done, done);
++  } catch {
++    done();
+     update();
+-    // the presets scene lays itself out from its measured box: give it two frames before showing it
+-    await nextFrame();
+-    await nextFrame();
+-    for (const running of content.getAnimations()) running.cancel();
+-    await content
+-      .animate(
+-        [
+-          { opacity: 0, transform: 'scale(1.015)', filter: 'blur(6px)' },
+-          { opacity: 1, transform: 'scale(1)', filter: 'blur(0px)' },
+-        ],
+-        { duration: IN_MS, easing: EASE_IN },
+-      )
+-      .finished.catch(() => {});
+-  } finally {
+-    swapping = false;
+   }
+ }
+ 
+ /** Blueprint → Coverflow */
+ export function cycleFromBlueprint(store: Store): void {
+-  void fadeSwap(store, () => {
++  morphSwap(store, () => {
+     enterPresetsAs = 'coverflow';
+     chooseImmersiveScene(store, 'presets');
+   });
+@@ -75,7 +73,7 @@ export function cycleFromBlueprint(store: Store): void {
+ 
+ /** Lyrics → Blueprint */
+ export function cycleFromLyrics(store: Store): void {
+-  void fadeSwap(store, () => {
++  morphSwap(store, () => {
+     forceSceneMode(store, 'none');
+     chooseImmersiveScene(store, 'paper');
+   });
+diff --git a/src/immersive/scene/coverflowItems.ts b/src/immersive/scene/coverflowItems.ts
+index 030a3a1..c466711 100644
+--- a/src/immersive/scene/coverflowItems.ts
++++ b/src/immersive/scene/coverflowItems.ts
+@@ -55,7 +55,8 @@ export interface PlannedItem extends ItemBase {
+   readonly kind: 'planned';
+   readonly track: UpNextTrack;
+   readonly guid: string;
+-  readonly row: number;
++  /** Playlist row; null for a song the plan keeps by path */
++  readonly row: number | null;
+   /** Position in the plan, what `ShufflePlanService.playAt` takes */
+   readonly position: number;
+ }
+@@ -81,7 +82,7 @@ export interface CoverflowSources {
+   /** Shuffle plan rows, used when there is no list order to follow */
+   readonly planned?: {
+     readonly guid: string;
+-    readonly rows: readonly { row: number; track: UpNextTrack; position: number }[];
++    readonly rows: readonly { row: number | null; track: UpNextTrack; position: number }[];
+   } | null;
+ }
+ 
+diff --git a/src/immersive/scene/sceneTransition.css b/src/immersive/scene/sceneTransition.css
+index cceb34e..c4c1ae8 100644
+--- a/src/immersive/scene/sceneTransition.css
++++ b/src/immersive/scene/sceneTransition.css
+@@ -48,3 +48,24 @@ html[data-scene-transition]::view-transition-new(scene-cover):only-child {
+     opacity: 0;
+   }
+ }
++
++/* switching between Blueprint and the other two views: the cover glides across on its own (scene-cover);
++   everything else cross-fades, the old view quickly out, the new one in on the glide's curve */
++html[data-scene-transition]::view-transition-group(scene-body) {
++  animation: none;
++}
++
++html[data-scene-transition]::view-transition-old(scene-body) {
++  animation: scene-fade-out var(--scene-exit-duration) linear both;
++}
++
++html[data-scene-transition]::view-transition-new(scene-body) {
++  animation: scene-body-in var(--scene-glide-duration) var(--scene-glide-easing) both;
++}
++
++@keyframes scene-body-in {
++  from {
++    opacity: 0;
++    transform: scale(0.985);
++  }
++}
+diff --git a/src/immersive/scene/shufflePlan.ts b/src/immersive/scene/shufflePlan.ts
+index 14be668..0e1c8f1 100644
+--- a/src/immersive/scene/shufflePlan.ts
++++ b/src/immersive/scene/shufflePlan.ts
+@@ -12,17 +12,22 @@ import { UP_NEXT_FIELDS, upNextTrackOf, type UpNextTrack } from '../../playback/
+  * like shuffling a deck: every song of the playing playlist once, then a fresh deal, forever. Only the very
+  * next song is put in the playback queue, so what the coverflow shows is what really plays, and the queue
+  * stays one song long. Songs the user queued by hand play first; the plan carries on after them.
++ *
++ * Most entries are rows of the playing playlist. A song dragged in from elsewhere (one from the history)
++ * is kept by path and queued by path when its turn comes.
+  */
+ 
+ const RANDOM_ORDERS = new Set(['random', 'shuffle-tracks', 'shuffle-albums', 'shuffle-folders']);
+ /** At most this many rows per metadata read */
+ const READ_BATCH = 120;
+ 
++export type PlanEntry = number | { readonly path: string; readonly track: UpNextTrack };
++
+ export interface ShufflePlan {
+   readonly guid: string;
+   readonly count: number;
+-  /** Playlist rows in the order they will play; grows by whole deals as the coverflow scrolls on */
+-  readonly order: readonly number[];
++  /** What will play, in order; grows by whole deals as the coverflow scrolls on */
++  readonly order: readonly PlanEntry[];
+   /** Position in `order` of the next song to play */
+   readonly cursor: number;
+   /** Metadata of the rows read so far, by row */
+@@ -30,7 +35,8 @@ export interface ShufflePlan {
+ }
+ 
+ export interface PlannedRow {
+-  readonly row: number;
++  /** Playlist row; null for a song kept by path */
++  readonly row: number | null;
+   readonly track: UpNextTrack;
+   /** Position in the plan; keeps keys unique when a row comes round again in a later deal */
+   readonly position: number;
+@@ -39,39 +45,49 @@ export interface PlannedRow {
+ const planAtom = atom<ShufflePlan | null>(null);
+ export const shufflePlanAtom: Atom<ShufflePlan | null> = atom((get) => get(planAtom));
+ 
++const trackAt = (plan: ShufflePlan, entry: PlanEntry | undefined): UpNextTrack | undefined =>
++  entry === undefined ? undefined : typeof entry === 'number' ? plan.tracks.get(entry) : entry.track;
++
+ /** The upcoming songs whose metadata is in, from the next one on, stopping at the first gap */
+ export const plannedRowsAtom: Atom<readonly PlannedRow[]> = atom((get) => {
+   const plan = get(planAtom);
+   if (!plan) return [];
+   const rows: PlannedRow[] = [];
+   for (let position = plan.cursor; position < plan.order.length; position++) {
+-    const row = plan.order[position];
+-    const track = row === undefined ? undefined : plan.tracks.get(row);
+-    if (row === undefined || !track) break;
+-    rows.push({ row, track, position });
++    const entry = plan.order[position];
++    const track = trackAt(plan, entry);
++    if (entry === undefined || !track) break;
++    rows.push({ row: typeof entry === 'number' ? entry : null, track, position });
+   }
+   return rows;
+ });
+ 
+-function deal(count: number, avoidFirst: readonly number[]): number[] {
++function deal(count: number, avoidFirst: readonly PlanEntry[]): number[] {
+   const rows = Array.from({ length: count }, (_, row) => row);
+   for (let i = rows.length - 1; i > 0; i--) {
+     const j = Math.floor(Math.random() * (i + 1));
+     [rows[i], rows[j]] = [rows[j] as number, rows[i] as number];
+   }
+   // don't start a new deal with a song that has just played
+-  const recent = new Set(avoidFirst);
++  const recent = new Set(avoidFirst.filter((entry) => typeof entry === 'number'));
+   for (let i = 0; i < Math.min(rows.length, 8) && recent.has(rows[0] as number); i++) {
+     rows.push(rows.shift() as number);
+   }
+   return rows;
+ }
+ 
++const keyOf = (entry: PlanEntry): string =>
++  typeof entry === 'number' ? `row:${entry}` : `path:${entry.path}`;
++
+ export interface ShufflePlanService {
+   /** Make sure metadata is in for the next `ahead` songs, dealing more of the deck when needed */
+   ensure(ahead: number): void;
+   /** Play the planned song at `position`; the plan jumps there and the queue follows */
+   playAt(position: number): Promise<boolean>;
++  /** Move the planned song at `position` so it plays `index`-th from now (0 = next) */
++  move(position: number, index: number): void;
++  /** Put a song into the plan so it plays `index`-th from now (0 = next) */
++  insert(entry: PlanEntry, index: number): void;
+   dispose(): void;
+ }
+ 
+@@ -87,7 +103,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+   let running = false;
+   let again = false;
+   /** The song this plan put in the queue, so only that one is ever taken back out */
+-  let queuedByPlan: { row: number; handle: string } | null = null;
++  let queuedByPlan: { key: string; handle: string } | null = null;
+   let wanted = 16;
+   let reading = false;
+   /** A song picked in the coverflow, until it starts playing */
+@@ -126,33 +142,41 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+ 
+   async function step(): Promise<void> {
+     if (disposed) return;
+-    if (!isRandom() || store.get(currentTrackAtom) === null) {
++    const current = store.get(currentTrackAtom);
++    if (!isRandom() || current === null) {
+       store.set(planAtom, null);
+       return;
+     }
+     const playing = await settle(() => fb.player.getPlayingPlaylist());
+     if (disposed || !playing?.success || !playing.found || playing.playlistGuid === null) return;
+-    const guid = playing.playlistGuid;
+     const at = await settle(() => fb.player.getCurrentTrackIndex());
+     const playingRow = at?.success && at.found && at.index !== null ? at.index : null;
+ 
+     let plan = store.get(planAtom);
+-    if (!plan || plan.guid !== guid) plan = await fresh(guid, playingRow);
++    // a song the plan queued by path plays without moving foobar2000 off the plan's playlist; any other
++    // change of playlist means the user started somewhere else, and the deck is dealt from there
++    const ours = queuedByPlan !== null && queuedByPlan.handle === current.handle;
++    if (!plan || (plan.guid !== playing.playlistGuid && !ours)) {
++      plan = await fresh(playing.playlistGuid, playingRow);
++    }
+     if (!plan || disposed) return;
+-    const counted = await settle(() => fb.playlist.getCount(guid));
+-    if (counted?.success && counted.count !== plan.count) plan = await fresh(guid, playingRow);
++    const counted = await settle(() => fb.playlist.getCount(plan!.guid));
++    if (counted?.success && counted.count !== plan.count) plan = await fresh(plan.guid, playingRow);
+     if (!plan || disposed) return;
+ 
+     // the song now playing is the plan's next one (it came off the queue), or the one picked in the
+     // coverflow: the plan moves on to just after it. Anything else (previous, a song picked elsewhere) is a
+     // detour; the plan waits where it is and its next song stays queued
+-    if (playingRow !== null) {
+-      if (jump && plan.order[jump.position] === playingRow) {
+-        plan = { ...plan, cursor: jump.position + 1 };
+-        jump = null;
+-      } else if (plan.order[plan.cursor] === playingRow) {
+-        plan = { ...plan, cursor: plan.cursor + 1 };
+-      }
++    const isPlaying = (entry: PlanEntry | undefined): boolean =>
++      entry !== undefined &&
++      (typeof entry === 'number'
++        ? playing.playlistGuid === plan!.guid && playingRow === entry
++        : entry.track.handle === current.handle || entry.path === current.path);
++    if (jump && isPlaying(plan.order[jump.position])) {
++      plan = { ...plan, cursor: jump.position + 1 };
++      jump = null;
++    } else if (isPlaying(plan.order[plan.cursor])) {
++      plan = { ...plan, cursor: plan.cursor + 1 };
+     }
+     if (plan.cursor >= plan.order.length) {
+       plan = { ...plan, order: [...plan.order, ...deal(plan.count, plan.order.slice(-8))] };
+@@ -162,30 +186,38 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     const next = plan.order[plan.cursor];
+     if (next === undefined) return;
+     const entries = store.get(queueViewAtom).entries;
+-    // our queued song is no longer the next one (the plan jumped): take it back out
+-    if (queuedByPlan && queuedByPlan.row !== next) {
++    // our queued song is no longer the next one (the plan jumped or was reordered): take it back out
++    if (queuedByPlan && queuedByPlan.key !== keyOf(next)) {
+       const stale = queuedByPlan;
+       const index = entries.findIndex((entry) => entry.track.handle === stale.handle);
+       queuedByPlan = null;
+       if (index >= 0) {
+         await settle(() => fb.queue.remove(index));
+-        return void (again = true);
++        again = true;
++        return;
+       }
+     }
+     if (entries.length > 0) return;
+-    const added = await settle(() => fb.queue.add({ playlistGuid: guid, track: next }));
++    const added =
++      typeof next === 'number'
++        ? await settle(() => fb.queue.add({ playlistGuid: plan!.guid, track: next }))
++        : await settle(() => fb.queue.insertNext([next.path], 0));
+     if (added?.success) {
+-      const track = plan.tracks.get(next);
+-      queuedByPlan = { row: next, handle: track?.handle ?? '' };
+-      if (!track) readTracks([next]);
++      const track = trackAt(plan, next);
++      queuedByPlan = { key: keyOf(next), handle: track?.handle ?? '' };
++      if (!track && typeof next === 'number') readTracks([next]);
+     }
+   }
+ 
+   function readTracks(rows: readonly number[]): void {
+     const plan = store.get(planAtom);
+-    if (!plan || rows.length === 0) return;
++    if (!plan || rows.length === 0) {
++      reading = false;
++      return;
++    }
+     void settle(() => fb.playlist.getTracksAt(plan.guid, rows, undefined, [...UP_NEXT_FIELDS])).then(
+       (answer) => {
++        reading = false;
+         const now = store.get(planAtom);
+         if (disposed || !answer?.success || !now || now.guid !== plan.guid) return;
+         if (answer.total !== now.count) return void sync();
+@@ -193,12 +225,11 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+         for (const track of answer.tracks) {
+           if (typeof track.index === 'number') tracks.set(track.index, upNextTrackOf(track));
+         }
+-        if (queuedByPlan && queuedByPlan.handle === '') {
+-          queuedByPlan = { ...queuedByPlan, handle: tracks.get(queuedByPlan.row)?.handle ?? '' };
++        if (queuedByPlan && queuedByPlan.handle === '' && queuedByPlan.key.startsWith('row:')) {
++          const row = Number(queuedByPlan.key.slice(4));
++          queuedByPlan = { ...queuedByPlan, handle: tracks.get(row)?.handle ?? '' };
+         }
+         store.set(planAtom, { ...now, tracks });
+-        reading = false;
+-        fill();
+       },
+       () => {
+         reading = false;
+@@ -214,20 +245,33 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     while (plan.order.length < plan.cursor + wanted + 1) {
+       plan = { ...plan, order: [...plan.order, ...deal(plan.count, plan.order.slice(-8))] };
+     }
+-    if (plan !== store.get(planAtom)) store.set(planAtom, plan);
++    if (plan !== store.get(planAtom)) {
++      store.set(planAtom, plan);
++      return;
++    }
+     const missing: number[] = [];
+     const seen = new Set<number>();
+     for (let p = plan.cursor; p <= plan.cursor + wanted && missing.length < READ_BATCH; p++) {
+-      const row = plan.order[p];
+-      if (row === undefined || plan.tracks.has(row) || seen.has(row)) continue;
+-      seen.add(row);
+-      missing.push(row);
++      const entry = plan.order[p];
++      if (typeof entry !== 'number' || plan.tracks.has(entry) || seen.has(entry)) continue;
++      seen.add(entry);
++      missing.push(entry);
+     }
+     if (missing.length === 0) return;
+     reading = true;
+     readTracks(missing);
+   }
+ 
++  /** Change the order, then let the queue follow (its next song may have changed) */
++  function reorder(change: (order: PlanEntry[], cursor: number) => void): void {
++    const plan = store.get(planAtom);
++    if (!plan) return;
++    const order = [...plan.order];
++    change(order, plan.cursor);
++    store.set(planAtom, { ...plan, order });
++    void sync();
++  }
++
+   // track change and queue change arrive as separate events: let both land before looking
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const later = () => {
+@@ -238,9 +282,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     store.sub(currentTrackAtom, later),
+     store.sub(playbackOrderAtom, later),
+     store.sub(queueViewAtom, later),
+-    store.sub(planAtom, () => {
+-      if (!reading) fill();
+-    }),
++    store.sub(planAtom, () => fill()),
+   ];
+   void sync();
+ 
+@@ -251,12 +293,28 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     },
+     async playAt(position) {
+       const plan = store.get(planAtom);
+-      const row = plan?.order[position];
+-      if (!plan || row === undefined) return false;
++      const entry = plan?.order[position];
++      if (!plan || entry === undefined) return false;
+       jump = { position };
+-      const answer = await settle(() => fb.playlist.playTrack(plan.guid, row));
++      const answer =
++        typeof entry === 'number'
++          ? await settle(() => fb.playlist.playTrack(plan.guid, entry))
++          : await settle(() => fb.player.playPath(entry.path));
+       return answer?.success === true;
+     },
++    move(position, index) {
++      reorder((order, cursor) => {
++        if (position < cursor || position >= order.length) return;
++        const [entry] = order.splice(position, 1);
++        if (entry === undefined) return;
++        order.splice(Math.min(order.length, cursor + Math.max(0, index)), 0, entry);
++      });
++    },
++    insert(entry, index) {
++      reorder((order, cursor) => {
++        order.splice(Math.min(order.length, cursor + Math.max(0, index)), 0, entry);
++      });
++    },
+     dispose() {
+       disposed = true;
+       clearTimeout(timer);
+diff --git a/src/theme/ThemeRoot.tsx b/src/theme/ThemeRoot.tsx
+index f7ee309..0e1b758 100644
+--- a/src/theme/ThemeRoot.tsx
++++ b/src/theme/ThemeRoot.tsx
+@@ -104,6 +104,13 @@ export interface ThemeRootProps {
+  * 页面语言跟着界面语言走：读屏按它选发音，中日韩文字按它选字形
+  */
+ /** Immersive layers read these when clear glass is on (see ImmersiveView, PresetsScene, PaperScene, PaperCoverWash) */
++/**
++ * While the immersive view is up the main window underneath must not drag the window: its title bar keeps
++ * its drag region even when hidden or covered, and a press there would move the whole window
++ */
++const IMMERSIVE_NO_DRAG =
++  ':root[data-immersive] #root, :root[data-immersive] #root * { -webkit-app-region: no-drag; app-region: no-drag; }\n';
++
+ function clearGlassVars(level: number, wash: number): string {
+   const paper = ((level / 100) * 0.6).toFixed(3);
+   return (
+@@ -197,7 +204,7 @@ export function ThemeRoot({ children }: ThemeRootProps) {
+   return (
+     <FluentProvider ref={rootRef} theme={theme} className={className} style={style}>
+       {/* Portal 复制类名而不复制行内变量；作用域规则让覆盖面板共享同一份不透明底色。 */}
+-      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground};${clear ? ` --bg-pane: color-mix(in srgb, ${tokens.colorNeutralBackground1} ${clearLevel}%, transparent);` : ''} }\n${clear ? `:root { ${clearGlassVars(clearLevel, clearWash)} }\n:root[data-immersive] #root { visibility: hidden; }\n` : ''}${SCROLLBAR_CSS_RULES}`}</style>
++      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground};${clear ? ` --bg-pane: color-mix(in srgb, ${tokens.colorNeutralBackground1} ${clearLevel}%, transparent);` : ''} }\n${clear ? `:root { ${clearGlassVars(clearLevel, clearWash)} }\n:root[data-immersive] #root { visibility: hidden; }\n` : ''}${IMMERSIVE_NO_DRAG}${SCROLLBAR_CSS_RULES}`}</style>
+       <WindowBackground
+         solidColor={tintedSurface(tokens.colorNeutralBackground2, tone, scheme, {
+           tint: themeTint,
+-- 
+2.43.0
+

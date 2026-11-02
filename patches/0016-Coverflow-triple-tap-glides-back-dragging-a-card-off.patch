@@ -1,0 +1,284 @@
+From 1bbeef0b79edcd6b238c276a25a7262dffe21789 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 07:39:03 +0000
+Subject: [PATCH 16/16] Coverflow: triple tap glides back; dragging a card off
+ the bottom sinks the song to the end
+
+- empty space: a triple tap glides back to the playing song; a double tap there waits a moment for a
+  third before it switches view
+- a card dragged over the bottom edge sinks: random order moves it to the end of the shuffle plan
+  (a queued song leaves the queue for it); list order drops it from the queue or moves the row to
+  the playlist's end
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/Coverflow.module.css | 12 +++++
+ src/immersive/coverflow/Coverflow.tsx        | 46 ++++++++++++----
+ src/immersive/coverflow/dropUpcoming.ts      | 56 ++++++++++++++++++++
+ src/immersive/page/ImmersiveView.tsx         | 24 +++++++++
+ 4 files changed, 129 insertions(+), 9 deletions(-)
+
+diff --git a/src/immersive/coverflow/Coverflow.module.css b/src/immersive/coverflow/Coverflow.module.css
+index b5e396d..03d4bc4 100644
+--- a/src/immersive/coverflow/Coverflow.module.css
++++ b/src/immersive/coverflow/Coverflow.module.css
+@@ -112,6 +112,18 @@
+   animation: ghost-lift var(--motion-faster) var(--curveDecelerateMid);
+ }
+ 
++.ghost {
++  transition:
++    transform var(--motion-faster) var(--curveDecelerateMid),
++    opacity var(--motion-faster) var(--curveDecelerateMid);
++}
++
++/* over the bottom edge: the card sinks, dropping it sends the song to the end */
++.ghost[data-sink] {
++  transform: scale(0.82) translateY(18%);
++  opacity: 0.45;
++}
++
+ .ghost img {
+   width: 100%;
+   height: 100%;
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index 73a06b0..a067b65 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -28,7 +28,7 @@ import { sceneStateAtom } from '../scene/sceneActions.ts';
+ import { useSceneActions, useSceneFrame } from '../scene/sceneContext.ts';
+ import { useCoverHolder } from '../scene/useCoverHolder.ts';
+ import styles from './Coverflow.module.css';
+-import { canDrop, dropSong } from './dropUpcoming.ts';
++import { canDrop, canSink, dropSong, sinkSong } from './dropUpcoming.ts';
+ import { CoverflowCard, coverRequestSizes } from './CoverflowCard.tsx';
+ import { CoverflowMenu } from './CoverflowMenu.tsx';
+ import { createCoverflowEngine, type EngineCard, type EngineClock } from './engine.ts';
+@@ -38,6 +38,9 @@ import { RENDER_RADIUS, coverflowLayout, inViewRange, visibleIndexes } from './s
+ 
+ /** 无交互自动回位至当前播放曲目的超时时间（毫秒） */
+ const IDLE_MS = 3000;
++/** A dragged card this close to the bottom edge (share of the height, at least the minimum) sinks */
++const SINK_EDGE_SHARE = 0.12;
++const SINK_EDGE_MIN = 64;
+ /** 前向预读深度增量；除两侧基础视界外，为补间动画预留额外缓冲卡片 */
+ const EARLIER_AHEAD = RENDER_RADIUS * 2;
+ 
+@@ -337,6 +340,8 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     readonly grabY: number;
+     readonly src: string | null;
+     readonly bar: { readonly x: number; readonly top: number; readonly height: number } | null;
++    /** over the bottom edge: dropping it sinks the song to the end */
++    readonly sink: boolean;
+   }
+   const [drag, setDrag] = useState<DragView | null>(null);
+   const press = useRef<{
+@@ -346,7 +351,13 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     id: number;
+     element: HTMLElement;
+   } | null>(null);
+-  const dragging = useRef<{ key: string; gap: number | null; x: number; y: number } | null>(null);
++  const dragging = useRef<{
++    key: string;
++    gap: number | null;
++    sink: boolean;
++    x: number;
++    y: number;
++  } | null>(null);
+   const justDragged = useRef(false);
+   const edge = useRef(0);
+ 
+@@ -392,10 +403,17 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     if (!state || !box) return;
+     state.x = x;
+     state.y = y;
+-    const { gap, bar } = gapAt(x, state.key);
++    // dragged off the bottom of the screen: the song sinks to the end
++    const item = store.get(coverflowItemsAtom).find((entry) => entry.key === state.key);
++    const sink =
++      y > box.bottom - Math.max(SINK_EDGE_MIN, box.height * SINK_EDGE_SHARE) &&
++      item !== undefined &&
++      canSink(store, item);
++    const { gap, bar } = sink ? { gap: null, bar: null } : gapAt(x, state.key);
+     state.gap = gap;
+-    edge.current = x > box.right - 80 ? 1 : x < box.left + 80 ? -1 : 0;
+-    setDrag((view) => (view ? { ...view, x: x - box.left, y: y - box.top, bar } : view));
++    state.sink = sink;
++    edge.current = sink ? 0 : x > box.right - 80 ? 1 : x < box.left + 80 ? -1 : 0;
++    setDrag((view) => (view ? { ...view, x: x - box.left, y: y - box.top, bar, sink } : view));
+   };
+   const endDrag = (drop: boolean) => {
+     const state = dragging.current;
+@@ -410,7 +428,8 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     setTimeout(() => (justDragged.current = false), 0);
+     const list = store.get(coverflowItemsAtom);
+     const item = list.find((entry) => entry.key === state.key);
+-    if (drop && item && state.gap !== null) void dropSong(store, list, item, state.gap);
++    if (drop && item && state.sink) void sinkSong(store, item);
++    else if (drop && item && state.gap !== null) void dropSong(store, list, item, state.gap);
+   };
+   // near an edge the covers scroll on by themselves, so a song can travel far
+   useEffect(() => {
+@@ -459,9 +478,10 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+         aria-activedescendant={`${baseId}-${selected}`}
+         data-scene-element="coverflow"
+         data-key-pass
+-        // empty space: one tap glides back to the playing song (a double tap switches view, see ImmersiveView)
++        // empty space: a triple tap glides back to the playing song (a double tap switches view, see ImmersiveView)
+         onClick={(event) => {
+-          if (!justDragged.current && onEmpty(event.target)) sceneActions.browse(null);
++          if (event.detail === 3 && !justDragged.current && onEmpty(event.target))
++            sceneActions.browse(null);
+         }}
+         onPointerDown={(event) => {
+           if (event.button !== 0 || leaving) return;
+@@ -494,7 +514,13 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+           root.current?.setPointerCapture(event.pointerId);
+           const rect = pressed.element.getBoundingClientRect();
+           pressed.element.dataset.dragging = '';
+-          dragging.current = { key: pressed.key, gap: null, x: event.clientX, y: event.clientY };
++          dragging.current = {
++            key: pressed.key,
++            gap: null,
++            sink: false,
++            x: event.clientX,
++            y: event.clientY,
++          };
+           setDrag({
+             key: pressed.key,
+             x: event.clientX - box.left,
+@@ -505,6 +531,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+             grabY: pressed.y - rect.top,
+             src: pressed.element.querySelector('img')?.src ?? null,
+             bar: null,
++            sink: false,
+           });
+           moveDrag(event.clientX, event.clientY);
+         }}
+@@ -552,6 +579,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+         {drag && (
+           <div
+             className={styles.ghost}
++            data-sink={drag.sink || undefined}
+             style={{
+               left: drag.x - drag.grabX,
+               top: drag.y - drag.grabY,
+diff --git a/src/immersive/coverflow/dropUpcoming.ts b/src/immersive/coverflow/dropUpcoming.ts
+index d5fb828..64b7901 100644
+--- a/src/immersive/coverflow/dropUpcoming.ts
++++ b/src/immersive/coverflow/dropUpcoming.ts
+@@ -234,3 +234,59 @@ async function dropUpcoming(
+   if (ref === '') return;
+   await settle(() => fb.queue.insertNext([ref], slot));
+ }
++
++/** Whether `dragged` can be sunk to the end (see `sinkSong`) */
++export function canSink(store: Store, dragged: CoverflowItem): boolean {
++  if (dragged.kind === 'current' || !dragged.track) return false;
++  if (store.get(shufflePlanAtom) && activeShufflePlan()) return true;
++  return dragged.kind === 'queued' || dragged.kind === 'earlier' || dragged.kind === 'upNext';
++}
++
++/**
++ * A card dragged off the bottom of the screen sinks: the song leaves what plays next and goes to the very
++ * end. In random order it moves to the end of the shuffle plan (a queued song leaves the queue for it); in
++ * list order a queued song leaves the queue and a playlist song moves to the playlist's last row.
++ */
++export async function sinkSong(store: Store, dragged: CoverflowItem): Promise<void> {
++  if (!canSink(store, dragged) || !dragged.track) return;
++  const removeQueued = async () => {
++    if (dragged.kind !== 'queued') return;
++    const entries = store.get(queueViewAtom).entries;
++    const index = entries.findIndex((entry) => entry.key === dragged.entry);
++    if (index >= 0) await settle(() => fb.queue.remove(index));
++  };
++  const plan = store.get(shufflePlanAtom);
++  const service = activeShufflePlan();
++  if (plan && service) {
++    const head = plan.order[plan.cursor];
++    const headHandle =
++      head === undefined
++        ? null
++        : head.row !== null
++          ? plan.tracks.get(head.row)?.handle
++          : head.track.handle;
++    const position =
++      dragged.kind === 'planned' || (dragged.kind === 'played' && dragged.position !== undefined)
++        ? (dragged.position ?? null)
++        : dragged.kind === 'queued' && dragged.track.handle === headHandle
++          ? plan.cursor
++          : null;
++    if (position !== null) {
++      service.move(position, Number.MAX_SAFE_INTEGER);
++      return;
++    }
++    await removeQueued();
++    const row =
++      (dragged.kind === 'earlier' || dragged.kind === 'upNext') && dragged.guid === plan.guid
++        ? dragged.row
++        : null;
++    service.insert(planEntryFor(plan, dragged.track, row), Number.MAX_SAFE_INTEGER);
++    return;
++  }
++  if (dragged.kind === 'queued') return removeQueued();
++  if (dragged.kind !== 'earlier' && dragged.kind !== 'upNext') return;
++  const counted = await settle(() => fb.playlist.getCount(dragged.guid));
++  if (!counted?.success) return;
++  const delta = counted.count - 1 - dragged.row;
++  if (delta > 0) await settle(() => fb.playlist.moveTracks(dragged.guid, [dragged.row], delta));
++}
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index e155e75..090c7d2 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -25,6 +25,10 @@ import { PresetsScene } from './PresetsScene.tsx';
+ import styles from './ImmersiveView.module.css';
+ import { startShufflePlan } from '../scene/shufflePlan.ts';
+ import { cycleNext, isCycleTarget } from './viewCycle.ts';
++
++const COVERFLOW = '[data-scene-element="coverflow"]';
++/** how long a double tap in Coverflow waits for a third tap before it switches view */
++const TRIPLE_TAP_WAIT_MS = 380;
+ import { handleViewCycle } from '../scene/viewCycleRequest.ts';
+ import { setImmersiveUp } from '../../theme/backdrop.ts';
+ 
+@@ -88,6 +92,14 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+   const controlsVisible = useAtomValueRawSync(controlsVisibleAtom);
+   const [controlsFocused, setControlsFocused] = useState(false);
+   const root = useRef<HTMLElement>(null);
++  // Coverflow: a triple tap on empty space glides back to the playing song, so a double tap there
++  // waits a moment for a third before it switches view
++  const pendingCycle = useRef<ReturnType<typeof setTimeout> | null>(null);
++  const dropPendingCycle = () => {
++    if (pendingCycle.current !== null) clearTimeout(pendingCycle.current);
++    pendingCycle.current = null;
++  };
++  useEffect(() => dropPendingCycle, []);
+   const content = useRef<HTMLDivElement>(null);
+   // 控制层留给场景元素的挂载点：控制层与场景是兄弟，经上下文交给场景里的元素
+   const [slots, setSlots] = useState<ControlSlots>({ tabs: null, views: null });
+@@ -162,8 +174,20 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+         const inside = event.target instanceof Node && event.currentTarget.contains(event.target);
+         if (!current || !inside || !isCycleTarget(event.target)) return;
+         window.getSelection()?.removeAllRanges();
++        dropPendingCycle();
++        if (event.target instanceof Element && event.target.closest(COVERFLOW)) {
++          pendingCycle.current = setTimeout(() => {
++            pendingCycle.current = null;
++            cycleNext(store);
++          }, TRIPLE_TAP_WAIT_MS);
++          return;
++        }
+         cycleNext(store);
+       }}
++      onClick={(event) => {
++        // the third tap of a triple tap: Coverflow glides back instead (see Coverflow)
++        if (event.detail >= 3) dropPendingCycle();
++      }}
+       onKeyDown={(event) => {
+         if (event.key !== 'Escape') shell?.touch();
+       }}
+-- 
+2.43.0
+

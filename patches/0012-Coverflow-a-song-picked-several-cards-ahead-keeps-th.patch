@@ -1,0 +1,342 @@
+From 7c89d0ca13793c1d7e9f84503ecb0f348fe26d92 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 03:07:59 +0000
+Subject: [PATCH 12/16] Coverflow: a song picked several cards ahead keeps the
+ right side in place
+
+Right after the pick, playback has moved on but the shuffle plan has not: the picked card got a fresh key
+and the row was rebuilt. Lay the plan out as it will be once it catches up (picked song in the middle,
+skipped ones already on the played side), so only the played side folds.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/Coverflow.tsx         | 19 ++++--
+ src/immersive/coverflow/dropUpcoming.ts       | 13 +++-
+ src/immersive/scene/coverflowItems.ts         | 60 ++++++++++++-------
+ src/immersive/scene/shufflePlan.ts            | 17 ++++--
+ .../immersive/scene/coverflowItems.test.ts    | 54 ++++++++++++++++-
+ .../immersive/scene/shufflePlanOrder.test.ts  |  7 ++-
+ 6 files changed, 133 insertions(+), 37 deletions(-)
+
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index dcfd244..57d920e 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -332,9 +332,13 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     readonly bar: { readonly x: number; readonly top: number; readonly height: number } | null;
+   }
+   const [drag, setDrag] = useState<DragView | null>(null);
+-  const press = useRef<{ key: string; x: number; y: number; id: number; element: HTMLElement } | null>(
+-    null,
+-  );
++  const press = useRef<{
++    key: string;
++    x: number;
++    y: number;
++    id: number;
++    element: HTMLElement;
++  } | null>(null);
+   const dragging = useRef<{ key: string; gap: number | null; x: number; y: number } | null>(null);
+   const justDragged = useRef(false);
+   const edge = useRef(0);
+@@ -351,14 +355,16 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     const cards: { index: number; rect: DOMRect }[] = [];
+     list.forEach((item, index) => {
+       const element = elements.current.get(item.key);
+-      if (element && item.key !== skip) cards.push({ index, rect: element.getBoundingClientRect() });
++      if (element && item.key !== skip)
++        cards.push({ index, rect: element.getBoundingClientRect() });
+     });
+     cards.sort((a, b) => a.index - b.index);
+     const centerOf = (rect: DOMRect) => rect.left + rect.width / 2;
+     const after = cards.find((card) => x < centerOf(card.rect));
+     const gap = after ? after.index : list.length;
+     const dragged = list.find((item) => item.key === skip);
+-    if (!box || at < 0 || !dragged || !canDrop(store, list, dragged, gap)) return { gap: null, bar: null };
++    if (!box || at < 0 || !dragged || !canDrop(store, list, dragged, gap))
++      return { gap: null, bar: null };
+     const before = [...cards].reverse().find((card) => card.index < gap);
+     const playing = elements.current.get(list[at]?.key ?? '')?.getBoundingClientRect();
+     const barX =
+@@ -452,7 +458,8 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+         }}
+         onPointerDown={(event) => {
+           if (event.button !== 0 || leaving) return;
+-          const card = event.target instanceof Element ? event.target.closest(`.${styles.card}`) : null;
++          const card =
++            event.target instanceof Element ? event.target.closest(`.${styles.card}`) : null;
+           const key = card ? keyOfElement(card) : null;
+           if (!card || !key) return;
+           press.current = {
+diff --git a/src/immersive/coverflow/dropUpcoming.ts b/src/immersive/coverflow/dropUpcoming.ts
+index b9e48cf..a5f4912 100644
+--- a/src/immersive/coverflow/dropUpcoming.ts
++++ b/src/immersive/coverflow/dropUpcoming.ts
+@@ -77,11 +77,15 @@ async function dropPlayed(
+           ? plan.cursor - 1
+           : plan.cursor;
+     const left = items.slice(0, currentAt);
+-    const firstOwn = left.findIndex((item) => item.kind === 'played' && item.position !== undefined);
++    const firstOwn = left.findIndex(
++      (item) => item.kind === 'played' && item.position !== undefined,
++    );
+     const ownStart = firstOwn < 0 ? left.length : firstOwn;
+     const firstOwnPosition = (() => {
+       const item = left[ownStart];
+-      return item?.kind === 'played' && item.position !== undefined ? item.position : currentPosition;
++      return item?.kind === 'played' && item.position !== undefined
++        ? item.position
++        : currentPosition;
+     })();
+     const target = items[gap];
+     let at: number;
+@@ -124,7 +128,10 @@ async function dropPlayed(
+         ? dragged.row
+         : null;
+     service.retire(
+-      { entry: row !== null ? { row } : { row: null, path: dragged.track.path, track: dragged.track } },
++      {
++        entry:
++          row !== null ? { row } : { row: null, path: dragged.track.path, track: dragged.track },
++      },
+       at,
+       along,
+     );
+diff --git a/src/immersive/scene/coverflowItems.ts b/src/immersive/scene/coverflowItems.ts
+index 6758642..8a06310 100644
+--- a/src/immersive/scene/coverflowItems.ts
++++ b/src/immersive/scene/coverflowItems.ts
+@@ -64,12 +64,7 @@ export interface PlannedItem extends ItemBase {
+ }
+ 
+ export type CoverflowItem =
+-  | PlayedItem
+-  | EarlierItem
+-  | CurrentItem
+-  | QueuedItem
+-  | UpNextItem
+-  | PlannedItem;
++  PlayedItem | EarlierItem | CurrentItem | QueuedItem | UpNextItem | PlannedItem;
+ export type CoverflowKind = CoverflowItem['kind'];
+ 
+ export interface CoverflowSources {
+@@ -91,32 +86,51 @@ export interface CoverflowSources {
+       position: number;
+     }[];
+     /** The plan's songs before its cursor, newest first */
+-    readonly history: readonly { id: number; handle: string; track: UpNextTrack; position: number }[];
++    readonly history: readonly {
++      id: number;
++      handle: string;
++      track: UpNextTrack;
++      position: number;
++    }[];
+   } | null;
+ }
+ 
+ /**
+  * How the playing song sits in the shuffle plan. Right after a song change the plan may not have caught up
+- * yet: the new song is still its first upcoming row (`early`). Either way the playing card keeps the key it had
+- * while it was coming up, and the songs before it keep theirs as they move left.
++ * yet: the new song is still one of its upcoming rows (the next one, or one picked further on, with the songs
++ * in between skipped). It is laid out the way the plan will have it once it catches up: the picked song in the
++ * middle, the skipped ones already on the played side. So the playing card keeps the key it had while it was
++ * coming up, the songs after it keep their places, and the catch-up changes nothing on screen.
+  */
+ function planView(sources: CoverflowSources) {
+   const planned = !sources.upNext.list ? sources.planned : null;
+   if (!planned) return null;
+   const handle = sources.current?.handle;
+-  const head = planned.rows[0];
+-  const early = head !== undefined && handle !== undefined && head.track.handle === handle;
++  const ahead =
++    handle === undefined ? -1 : planned.rows.findIndex((row) => row.track.handle === handle);
++  if (ahead >= 0) {
++    const picked = planned.rows[ahead];
++    const skipped = planned.rows
++      .slice(0, ahead)
++      .reverse()
++      .map((row) => ({
++        id: row.id,
++        handle: row.track.handle,
++        track: row.track,
++        position: row.position,
++      }));
++    return {
++      currentKey: picked ? `plan:${picked.id}` : null,
++      upcoming: planned.rows.slice(ahead + 1),
++      /** the plan's songs before the playing one, newest first */
++      played: [...skipped, ...planned.history],
++    };
++  }
+   const last = planned.history[0];
+-  const currentKey = early
+-    ? `plan:${head.id}`
+-    : last && handle === last.handle
+-      ? `plan:${last.id}`
+-      : null;
+   return {
+-    currentKey,
+-    upcoming: early ? planned.rows.slice(1) : planned.rows,
+-    /** the plan's songs before the playing one, newest first */
+-    played: early ? planned.history : planned.history.slice(1),
++    currentKey: last && handle === last.handle ? `plan:${last.id}` : null,
++    upcoming: planned.rows,
++    played: last && handle === last.handle ? planned.history.slice(1) : planned.history,
+   };
+ }
+ 
+@@ -186,9 +200,11 @@ export function coverflowItems(sources: CoverflowSources): CoverflowItem[] {
+       ? listKeyOf(`${earlierList.guid}:${earlierTotal}:${sources.current.handle}`)
+       : (planView(sources)?.currentKey ?? currentKeyOf(sources.current));
+   items.push({ key, kind: 'current', track: sources.current });
+-  // the plan's next song sits in the queue too; it is shown once, as the plan's card
++  // the plan's next song sits in the queue too; it is shown once, as the plan's card. Right after a song was
++  // picked further on, the song the plan had queued is a skipped one (shown on the played side) until the
++  // plan takes it back out of the queue
+   const plan = planView(sources);
+-  const planHead = plan?.upcoming[0];
++  const planHead = plan ? sources.planned?.rows[0] : undefined;
+   let headSkipped = false;
+   for (const entry of sources.queue) {
+     if (planHead && !headSkipped && entry.track.handle === planHead.track.handle) {
+diff --git a/src/immersive/scene/shufflePlan.ts b/src/immersive/scene/shufflePlan.ts
+index 2ead355..afd372b 100644
+--- a/src/immersive/scene/shufflePlan.ts
++++ b/src/immersive/scene/shufflePlan.ts
+@@ -4,7 +4,11 @@ import { settle } from '../../host/hostCall.ts';
+ import type { Store } from '../../kit/store.ts';
+ import { currentTrackAtom, playbackOrderAtom } from '../../playback/playback.ts';
+ import { queueViewAtom } from '../../playback/queue/queueState.ts';
+-import { UP_NEXT_FIELDS, upNextTrackOf, type UpNextTrack } from '../../playback/queue/upNextModel.ts';
++import {
++  UP_NEXT_FIELDS,
++  upNextTrackOf,
++  type UpNextTrack,
++} from '../../playback/queue/upNextModel.ts';
+ 
+ /**
+  * Shuffle plan: in a random playback order foobar2000 picks the next song only when the current one ends,
+@@ -205,7 +209,11 @@ export interface ShufflePlanService {
+    * position (an upcoming one, or one on the played side being reordered) or a new one. `along` follow it
+    * in, in order: songs of the playback history that sat between the drop spot and the plan's own
+    */
+-  retire(source: { position: number } | { entry: NewPlanEntry }, at: number, along?: readonly NewPlanEntry[]): void;
++  retire(
++    source: { position: number } | { entry: NewPlanEntry },
++    at: number,
++    along?: readonly NewPlanEntry[],
++  ): void;
+   /** Put a song into the plan so it plays `index`-th from now (0 = next) */
+   insert(entry: NewPlanEntry, index: number): void;
+   dispose(): void;
+@@ -333,7 +341,9 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+       reading = false;
+       return;
+     }
+-    void settle(() => fb.playlist.getTracksAt(plan.guid, rows, undefined, [...UP_NEXT_FIELDS])).then(
++    void settle(() =>
++      fb.playlist.getTracksAt(plan.guid, rows, undefined, [...UP_NEXT_FIELDS]),
++    ).then(
+       (answer) => {
+         reading = false;
+         const now = store.get(planAtom);
+@@ -394,7 +404,6 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     void sync();
+   }
+ 
+-
+   // track change and queue change arrive as separate events: let both land before looking
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const later = () => {
+diff --git a/tests/unit/immersive/scene/coverflowItems.test.ts b/tests/unit/immersive/scene/coverflowItems.test.ts
+index 6fc9e66..a63b64e 100644
+--- a/tests/unit/immersive/scene/coverflowItems.test.ts
++++ b/tests/unit/immersive/scene/coverflowItems.test.ts
+@@ -249,7 +249,12 @@ describe('选中项的解析', () => {
+ 
+ describe('coverflowItems: the shuffle plan on the played side', () => {
+   const history = (...names: string[]) =>
+-    names.map((name, i) => ({ id: i + 1, handle: track(name).handle, track: track(name), position: 10 - i }));
++    names.map((name, i) => ({
++      id: i + 1,
++      handle: track(name).handle,
++      track: track(name),
++      position: 10 - i,
++    }));
+ 
+   it('ends with the plan songs (oldest first) after the history not already shown', () => {
+     const items = coverflowItems(
+@@ -270,3 +275,50 @@ describe('coverflowItems: the shuffle plan on the played side', () => {
+     expect(items[currentIndexOf(items)]?.key).toBe('plan:1');
+   });
+ });
++
++describe('coverflowItems: a song picked further on in the shuffle plan', () => {
++  const planRow = (name: string, i: number) => ({
++    id: 50 + i,
++    row: i,
++    track: track(name),
++    position: 20 + i,
++  });
++  const rows = ['n1', 'n2', 'n3', 'n4', 'n5'].map(planRow);
++  const before = coverflowItems(
++    sources({
++      current: track('now'),
++      queue: [queued('n1')],
++      planned: {
++        guid: 'g',
++        rows,
++        history: [{ id: 1, handle: track('now').handle, track: track('now'), position: 19 }],
++      },
++    }),
++  );
++
++  it('right after it starts, the right side keeps its cards and the skipped ones are already on the left', () => {
++    // n4 picked: playback moved on, the plan (and the queue, still holding n1) not yet
++    const after = coverflowItems(
++      sources({
++        current: track('n4'),
++        queue: [queued('n1')],
++        planned: {
++          guid: 'g',
++          rows,
++          history: [{ id: 1, handle: track('now').handle, track: track('now'), position: 19 }],
++        },
++      }),
++    );
++    expect(after.map((item) => item.key)).toEqual([
++      'plan:1',
++      'plan:50',
++      'plan:51',
++      'plan:52',
++      'plan:53',
++      'plan:54',
++    ]);
++    expect(after[currentIndexOf(after)]?.key).toBe('plan:53');
++    // the card after the picked one is the same card it was before
++    expect(before.map((item) => item.key)).toContain('plan:54');
++  });
++});
+diff --git a/tests/unit/immersive/scene/shufflePlanOrder.test.ts b/tests/unit/immersive/scene/shufflePlanOrder.test.ts
+index dbb3191..f207dd0 100644
+--- a/tests/unit/immersive/scene/shufflePlanOrder.test.ts
++++ b/tests/unit/immersive/scene/shufflePlanOrder.test.ts
+@@ -46,7 +46,12 @@ describe('retireInPlan: a song put among the played ones', () => {
+ 
+   it('a new song and the history songs it passes come in together, in order', () => {
+     const order = deck(0, 1, 2, 3);
+-    const extra = (id: number): PlanEntry => ({ id, row: null, path: `p${id}`, track: {} as never });
++    const extra = (id: number): PlanEntry => ({
++      id,
++      row: null,
++      path: `p${id}`,
++      track: {} as never,
++    });
+     const change = retireInPlan(order, 2, { entry: extra(1) }, 0, [extra(2), extra(3)]);
+     expect(order.map((entry) => entry.id)).toEqual([1, 2, 3, 100, 101, 102, 103]);
+     expect(change?.cursor).toBe(5);
+-- 
+2.43.0
+

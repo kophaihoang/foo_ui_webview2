@@ -1,0 +1,607 @@
+From 5892418ec6b4cb0006c0cb438eac6b0a885fe032 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 04:57:50 +0000
+Subject: [PATCH 15/16] =?UTF-8?q?Glass=20only=20in=20Immersive=20(Mica=20o?=
+ =?UTF-8?q?utside);=20transparent=20Coverflow/Blueprint/Lyrics;=20synced?=
+ =?UTF-8?q?=20Coverflow=E2=86=92Lyrics=20flight?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- backdrop: clear glass only while Immersive is up; main UI falls back to Mica
+- Blueprint: no grid, crosses or cover wash under glass; panels keep a dark box
+- Coverflow: no blurred-cover backdrop under glass; corner keys hidden
+- Lyrics: soft dark shade behind the column
+- settings: drop the cover-glow slider
+- coverFlight: flyIntoLyrics swaps the scene first, then runs flight, fade-out and fade-in together
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/backdrop/Backdrop.module.css    |   8 +-
+ .../page/ImmersiveControls.module.css         |   6 +
+ src/immersive/page/ImmersiveView.tsx          |   8 +-
+ src/immersive/page/PresetsScene.tsx           |   5 +-
+ src/immersive/page/coverFlight.ts             | 179 ++++++++++++++----
+ src/immersive/paper/PaperMarks.module.css     |   7 +-
+ src/immersive/paper/PaperScene.tsx            |  23 ++-
+ .../presets/split/SplitPreset.module.css      |  20 ++
+ src/settings/BackgroundSourceRows.tsx         |  22 +--
+ src/theme/ThemeRoot.tsx                       |  30 ++-
+ src/theme/backdrop.ts                         |  23 ++-
+ 11 files changed, 253 insertions(+), 78 deletions(-)
+
+diff --git a/src/immersive/backdrop/Backdrop.module.css b/src/immersive/backdrop/Backdrop.module.css
+index 0492cd0..1c85faf 100644
+--- a/src/immersive/backdrop/Backdrop.module.css
++++ b/src/immersive/backdrop/Backdrop.module.css
+@@ -4,8 +4,12 @@
+   inset: 0;
+   overflow: hidden;
+   pointer-events: none;
+-  /* clear glass: the cover-color backdrop follows the "Cover color glow" slider */
+-  opacity: var(--glass-wash-opacity, 1);
++  transition: opacity 320ms ease-out;
++}
++
++/* clear glass: no cover-color backdrop, the desktop shows through */
++:global(html[data-glass]) .backdrop {
++  opacity: 0;
+ }
+ 
+ .backdrop > canvas {
+diff --git a/src/immersive/page/ImmersiveControls.module.css b/src/immersive/page/ImmersiveControls.module.css
+index 51bacad..11718c3 100644
+--- a/src/immersive/page/ImmersiveControls.module.css
++++ b/src/immersive/page/ImmersiveControls.module.css
+@@ -87,3 +87,9 @@
+     top: 18px;
+   }
+ }
++
++/* clear glass: no keys in the corners (Esc, a double tap and the covers do it all) */
++:global(html[data-glass]) .leading,
++:global(html[data-glass]) .corner {
++  display: none;
++}
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index 5e0fc6a..e155e75 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -26,6 +26,7 @@ import styles from './ImmersiveView.module.css';
+ import { startShufflePlan } from '../scene/shufflePlan.ts';
+ import { cycleNext, isCycleTarget } from './viewCycle.ts';
+ import { handleViewCycle } from '../scene/viewCycleRequest.ts';
++import { setImmersiveUp } from '../../theme/backdrop.ts';
+ 
+ export interface ImmersiveViewProps {
+   readonly shell: Pick<ImmersiveShell, 'touch' | 'toggleFullscreen' | 'leave'> | null;
+@@ -122,15 +123,18 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+     return () => plan.dispose();
+   }, [current, store]);
+ 
+-  // clear glass: the view is see-through, so hide the main window underneath while it is up
++  // clear glass: the window turns to glass while the view is up (the rest of the app keeps Mica), and the main
++  // window underneath is hidden
+   useEffect(() => {
+     if (!current) return;
+     const html = document.documentElement;
+     html.dataset.immersive = '';
++    setImmersiveUp(store, true);
+     return () => {
+       delete html.dataset.immersive;
++      setImmersiveUp(store, false);
+     };
+-  }, [current]);
++  }, [current, store]);
+ 
+   // Tab 回绕的哨兵：焦点从层里的键退到哨兵上（Tab 走过了头）就绕到另一头的键；从根元素进来就落在近的这一头
+   // 层里一颗能拿焦点的键都没有时回到根元素
+diff --git a/src/immersive/page/PresetsScene.tsx b/src/immersive/page/PresetsScene.tsx
+index 45409bc..de1acc6 100644
+--- a/src/immersive/page/PresetsScene.tsx
++++ b/src/immersive/page/PresetsScene.tsx
+@@ -31,6 +31,7 @@ import styles from './PresetsScene.module.css';
+ import { takePresetsEntryMode } from './viewCycle.ts';
+ import { useSceneView } from './useSceneView.ts';
+ import { useViewServices } from './viewServices.ts';
++import { clearGlassActiveAtom } from '../../theme/backdrop.ts';
+ 
+ /** 场景状态历史快照插槽；前进后退导航时用于还原页面、侧栏模式与交互状态 */
+ const SCENE_SLOT = createSnapshotSlot<SceneSnapshot>();
+@@ -82,6 +83,8 @@ export function PresetsScene() {
+   const state = useAtomValueRawSync(sceneStateAtom);
+   const lyrics = useAtomValueRawSync(useService(lyricsKey).state);
+   const backdropReleased = useEntryReached('backdrop');
++  // clear glass: no cover-color backdrop (it stops drawing too)
++  const glass = useAtomValueRawSync(clearGlassActiveAtom);
+   const hasTrack = useAtomValueRawSync(currentTrackAtom) !== null;
+   const connected = useAtomValueRawSync(playbackConnectedAtom);
+   const view = useSceneView(
+@@ -110,7 +113,7 @@ export function PresetsScene() {
+   );
+   return (
+     <div ref={root} className={styles.scene} data-scene="presets" data-preset={preset.id}>
+-      <Backdrop visible={shown && backdropReleased} fpsCap={fps === 0 ? null : fps} />
++      <Backdrop visible={shown && backdropReleased && !glass} fpsCap={fps === 0 ? null : fps} />
+       {box.width > 0 && (
+         <SceneActionsContext value={actions}>
+           <SceneFrameContext value={frame}>
+diff --git a/src/immersive/page/coverFlight.ts b/src/immersive/page/coverFlight.ts
+index dae6c54..c7c455f 100644
+--- a/src/immersive/page/coverFlight.ts
++++ b/src/immersive/page/coverFlight.ts
+@@ -34,6 +34,8 @@ const FLIGHT_MS = 620;
+ const LANDED_AT = 0.78;
+ /** A soft start and a long, gentle landing */
+ const FLIGHT_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
++/** Coverflow → Lyrics moves everything together, a little quicker than a flight into another scene */
++const SYNC_MS = 540;
+ /** The scene being left fades out this fast under the flying copy */
+ const OUT_MS = 200;
+ /** Blueprint fades in around the landed copy */
+@@ -313,47 +315,150 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+   });
+ }
+ 
+-/**
+- * Where the split preset (the lyrics view) puts its cover. The preset is in the page already, hidden while
+- * the coverflow is up, with its measures written on it (`SplitPreset`): the cover column takes 0.45 of the
+- * width (plus the reach into the sidebar), or all of it when centred; the cover sits centred in the column at
+- * the stack's top.
+- */
+ /** The split preset's own root; the presets scene's root carries the preset id too */
+ const SPLIT = '[data-scene="presets"] [data-preset="split"]';
+ 
+-function splitCoverBox(content: HTMLElement): LandingBox | null {
+-  const split = content.querySelector<HTMLElement>(SPLIT);
+-  const scene = content.querySelector<HTMLElement>('[data-scene="presets"]');
+-  if (!split || !scene) return null;
+-  const style = split.style;
+-  const width = parseFloat(style.width);
+-  const cover = parseFloat(style.getPropertyValue('--split-cover'));
+-  const top = parseFloat(style.getPropertyValue('--split-stack-top'));
+-  const reach = parseFloat(style.getPropertyValue('--split-reach')) || 0;
+-  if (![width, cover, top].every(Number.isFinite)) return null;
+-  const scale = Number(/scale\(([\d.]+)\)/.exec(style.transform)?.[1] ?? 1) || 1;
+-  const column = split.hasAttribute('data-centered') ? width : width * 0.45 + reach;
+-  const contentBox = content.getBoundingClientRect();
+-  const sceneBox = scene.getBoundingClientRect();
+-  const zoom = contentBox.width / content.clientWidth || 1;
+-  return {
+-    left: (sceneBox.left - contentBox.left) / zoom + ((column - cover) / 2) * scale,
+-    top: (sceneBox.top - contentBox.top) / zoom + top * scale,
+-    size: cover * scale,
+-    round: false,
+-    radius: 12,
+-  };
++/** Scale every length in a computed box-shadow, for a layer drawn at another size than the element it copies */
++function scaledShadow(shadow: string, by: number): string {
++  if (!shadow || shadow === 'none') return 'none';
++  return shadow.replace(/(-?\d*\.?\d+)px/g, (_, value: string) => `${Number(value) * by}px`);
+ }
+ 
+-/** Coverflow → Lyrics: from the middle card to the lyrics view's cover */
++/**
++ * Coverflow → Lyrics, all in one movement: the lyrics view is in the page already (hidden behind the
++ * coverflow), so it is shown first, see-through, and laid out; then, from the next frame on, the middle card's
++ * copy glides into the lyrics cover while the coverflow fades out and the lyrics view fades in on the same
++ * curve. Only transforms and opacity change from then on, so nothing waits on the page while things move.
++ * The copy wears the card's picture, corners and shadow at the start and the lyrics cover's at the end.
++ */
+ export function flyIntoLyrics(store: Store, update: () => void): boolean {
+-  return flyCover(store, {
+-    landing: splitCoverBox,
+-    leaving: (content) => content.querySelector<HTMLElement>('[data-stage="coverflow"]'),
+-    update,
+-    entering: (content) => content.querySelector<HTMLElement>(SPLIT),
+-    cover: (content) =>
+-      content.querySelector<HTMLElement>('[data-preset="split"] [data-scene-element="cover"]'),
+-  });
++  const doc = document;
++  const root = doc.documentElement;
++  const content = doc.querySelector<HTMLElement>('[data-immersive-content]');
++  const source = sharedCoverHolders.holder();
++  const stage = content?.querySelector<HTMLElement>('[data-stage="coverflow"]');
++  if (
++    flying ||
++    !content ||
++    !stage ||
++    !(source instanceof HTMLElement) ||
++    !content.querySelector(SPLIT) ||
++    store.get(reducedMotionAtom) ||
++    doc.visibilityState !== 'visible' ||
++    typeof content.animate !== 'function'
++  ) {
++    return false;
++  }
++  const start = source.getBoundingClientRect();
++  if (start.width < 1) return false;
++  const from: Rect = { x: start.left, y: start.top, size: start.width };
++  const sourceStyle = getComputedStyle(source);
++  const shown = source.querySelector('img');
++  const startImage =
++    shown && shown.complete && shown.naturalWidth > 0 ? shown.currentSrc || shown.src : null;
++  const cover = store.get(immersiveCoverAtom);
++  const url = cover.status === 'missing' ? null : cover.url;
++
++  setFlying(true);
++  root.dataset[FLIGHT_ATTRIBUTE] = '';
++  root.dataset[TRANSITION_ATTRIBUTE] = '';
++  // the copy sits on the card first (built at the card's size, so it is exact before anything is measured)
++  const first = buildPlane(startImage, url, from.size, 0, 1);
++  first.plane.style.transform = pose(from, from.size);
++  (content.parentElement ?? doc.body).append(first.plane);
++
++  // show the lyrics view, see-through, and let it lay out
++  try {
++    flushSync(update);
++  } catch {
++    update();
++  }
++  const entering = content.querySelector<HTMLElement>(SPLIT);
++  if (entering) entering.style.opacity = '0';
++  const real = content.querySelector<HTMLElement>(`${SPLIT} [data-scene-element="cover"]`);
++  const end = real?.getBoundingClientRect();
++  if (!real || !end || end.width < 1) {
++    first.plane.remove();
++    if (entering) entering.style.opacity = '';
++    delete root.dataset[FLIGHT_ATTRIBUTE];
++    delete root.dataset[TRANSITION_ATTRIBUTE];
++    setFlying(false);
++    return true;
++  }
++  const target: Rect = { x: end.left, y: end.top, size: end.width };
++  const targetStyle = getComputedStyle(real);
++  const size = Math.max(from.size, target.size);
++  // the real copy, at the larger of the two sizes, with both ends' corners and shadows
++  const { plane, square, round } = buildPlane(startImage, url, size, 0, 1);
++  square.style.borderRadius = `${(parseFloat(sourceStyle.borderTopLeftRadius) || 0) * (size / from.size)}px`;
++  square.style.boxShadow = scaledShadow(sourceStyle.boxShadow, size / from.size);
++  round.style.borderRadius = `${(parseFloat(targetStyle.borderTopLeftRadius) || 0) * (size / target.size)}px`;
++  round.style.boxShadow = scaledShadow(targetStyle.boxShadow, size / target.size);
++  round.querySelector('span')?.remove();
++  plane.style.transform = pose(from, size);
++  first.plane.replaceWith(plane);
++
++  let done = false;
++  const finish = () => {
++    if (done) return;
++    done = true;
++    delete root.dataset[FLIGHT_ATTRIBUTE];
++    setFlying(false);
++    if (entering) entering.style.opacity = '';
++    const image = real.querySelector('img');
++    const away = () =>
++      requestAnimationFrame(() => {
++        plane.remove();
++        delete root.dataset[TRANSITION_ATTRIBUTE];
++      });
++    if (!image || image.complete) {
++      away();
++      return;
++    }
++    const limit = setTimeout(away, IMAGE_WAIT_MS);
++    image.addEventListener(
++      'load',
++      () => {
++        clearTimeout(limit);
++        away();
++      },
++      { once: true },
++    );
++  };
++
++  // two frames: the lyrics view's first (see-through) frame is on screen, then everything moves at once
++  requestAnimationFrame(() =>
++    requestAnimationFrame(() => {
++      const flight = plane.animate(
++        [{ transform: pose(from, size) }, { transform: pose(target, size) }],
++        { duration: SYNC_MS, easing: FLIGHT_EASING, fill: 'forwards' },
++      );
++      square.animate([{ opacity: 1 }, { opacity: 0 }], {
++        duration: SYNC_MS,
++        easing: CURVE.decelerateMid.timing,
++        fill: 'forwards',
++      });
++      round.animate([{ opacity: 0 }, { opacity: 1 }], {
++        duration: SYNC_MS,
++        easing: CURVE.decelerateMid.timing,
++        fill: 'forwards',
++      });
++      stage.animate([{ opacity: 1 }, { opacity: 0 }], {
++        duration: OUT_MS,
++        easing: CURVE.accelerateMid.timing,
++        fill: 'forwards',
++      });
++      if (entering) {
++        entering.style.opacity = '';
++        entering.animate([{ opacity: 0 }, { opacity: 1 }], {
++          duration: SYNC_MS,
++          easing: FLIGHT_EASING,
++          fill: 'backwards',
++        });
++      }
++      flight.finished.then(finish, finish);
++    }),
++  );
++  setTimeout(finish, SYNC_MS + 1500);
++  return true;
+ }
+diff --git a/src/immersive/paper/PaperMarks.module.css b/src/immersive/paper/PaperMarks.module.css
+index 0dd0a6f..2815103 100644
+--- a/src/immersive/paper/PaperMarks.module.css
++++ b/src/immersive/paper/PaperMarks.module.css
+@@ -13,5 +13,10 @@
+ .pad {
+   position: absolute;
+   pointer-events: none;
+-  background: var(--paper-pad);
++  background: var(--glass-pad-bg, var(--paper-pad));
++}
++
++/* clear glass: no background marks, only the panel behind the readings */
++:global(html[data-glass]) .cross {
++  display: none;
+ }
+diff --git a/src/immersive/paper/PaperScene.tsx b/src/immersive/paper/PaperScene.tsx
+index 6a83a6c..01256f0 100644
+--- a/src/immersive/paper/PaperScene.tsx
++++ b/src/immersive/paper/PaperScene.tsx
+@@ -1,6 +1,7 @@
+ import { useAtomValueRawSync, useStore } from 'jotai/react';
+ import { useEffect, useMemo, useRef } from 'react';
+ import { colorSchemeAtom } from '../../theme/colorScheme.ts';
++import { clearGlassActiveAtom } from '../../theme/backdrop.ts';
+ import { PaperDecor } from '../decor/PaperDecor.tsx';
+ import { useDecorGuards } from '../decor/useDecorGuards.ts';
+ import { immersiveWashAtom } from '../page/immersivePrefs.ts';
+@@ -37,7 +38,9 @@ export function PaperScene() {
+   const root = useRef<HTMLDivElement>(null);
+   const { width, height } = useSceneSize(root);
+   const dark = useAtomValueRawSync(colorSchemeAtom) === 'dark';
+-  const wash = useAtomValueRawSync(immersiveWashAtom) !== 'off';
++  // clear glass: Blueprint has no background at all (no cover wash, no grid), only the readings
++  const glass = useAtomValueRawSync(clearGlassActiveAtom);
++  const wash = useAtomValueRawSync(immersiveWashAtom) !== 'off' && !glass;
+   // the ridge lines behind Blueprint are off: they redraw the whole window all the time and made the view heavy
+   const terrain = false;
+   const geometry = useMemo(() => paperGeometry(width, height), [width, height]);
+@@ -72,14 +75,16 @@ export function PaperScene() {
+           alphaFar={ALPHA_FAR}
+         />
+       )}
+-      <PaperDecor
+-        guards={guards}
+-        origin={origin}
+-        sheet={geometry.sheet}
+-        arcs={geometry.arcs}
+-        scale={scale}
+-        unit={stage ? scale : undefined}
+-      />
++      {!glass && (
++        <PaperDecor
++          guards={guards}
++          origin={origin}
++          sheet={geometry.sheet}
++          arcs={geometry.arcs}
++          scale={scale}
++          unit={stage ? scale : undefined}
++        />
++      )}
+       {terrain && stage && <TerrainRuler />}
+       {stage ? <PaperStage scale={scale} origin={origin} /> : <PaperSheet geometry={geometry} />}
+     </div>
+diff --git a/src/immersive/presets/split/SplitPreset.module.css b/src/immersive/presets/split/SplitPreset.module.css
+index 635fe45..7914a7b 100644
+--- a/src/immersive/presets/split/SplitPreset.module.css
++++ b/src/immersive/presets/split/SplitPreset.module.css
+@@ -102,12 +102,32 @@
+ 
+ /* 侧栏占满整栏的高，歌词、队列、历史各自管自己的边距与滚动 */
+ .side {
++  position: relative;
+   min-width: 0;
+   min-height: 0;
+   height: 100%;
+   overflow: hidden;
+ }
+ 
++/* clear glass: the lyrics read over the desktop on a soft dark shade that fades out at its edges; the words
++   carry a light shadow too */
++:global(html[data-glass]) .split {
++  text-shadow: var(--glass-text-shadow);
++}
++
++:global(html[data-glass]) .side::before {
++  content: '';
++  position: absolute;
++  inset: 0;
++  z-index: -1;
++  background: var(--glass-shade);
++  pointer-events: none;
++  mask-image:
++    linear-gradient(to right, transparent, #000 14%, #000 88%, transparent),
++    linear-gradient(to bottom, transparent, #000 10%, #000 90%, transparent);
++  mask-composite: intersect;
++}
++
+ /* 侧栏随居中与常规互转进退场：不进视图过渡的快照，是页面里的活元素，封面列的几个件在过渡层里，永远盖在它上面。
+    进场从正中线放大回来，退场朝正中线缩小；栏占窗宽的后 0.55，正中线在 0.5 处，也就是栏宽的 1/11。
+    时长是点到点的时长放慢到五成（`--split-speed`），与封面列同步；缩放比 `--split-side-scale` 在这里调 */
+diff --git a/src/settings/BackgroundSourceRows.tsx b/src/settings/BackgroundSourceRows.tsx
+index 52b0465..ee79dcd 100644
+--- a/src/settings/BackgroundSourceRows.tsx
++++ b/src/settings/BackgroundSourceRows.tsx
+@@ -11,9 +11,7 @@ import {
+   backdropKey,
+   clearGlassAtom,
+   clearGlassLevelAtom,
+-  clearGlassWashAtom,
+   chooseClearGlassLevel,
+-  chooseClearGlassWash,
+   nativeMaterialsAllowedAtom,
+ } from '../theme/backdrop.ts';
+ import {
+@@ -43,14 +41,13 @@ const TILE_LABELS: Readonly<Record<BackgroundTile, MessageKey>> = {
+   image: 'settings.backgroundImage',
+ };
+ 
+-const MATERIAL_LABELS: Readonly<Record<(typeof MATERIAL_CHOICES)[number] | 'clear', MessageKey>> =
+-  {
+-    inherit: 'settings.backdropInherit',
+-    mica: 'settings.backdropMica',
+-    'mica-alt': 'settings.backdropMicaAlt',
+-    acrylic: 'settings.backdropAcrylic',
+-    clear: 'settings.backdropClear',
+-  };
++const MATERIAL_LABELS: Readonly<Record<(typeof MATERIAL_CHOICES)[number] | 'clear', MessageKey>> = {
++  inherit: 'settings.backdropInherit',
++  mica: 'settings.backdropMica',
++  'mica-alt': 'settings.backdropMicaAlt',
++  acrylic: 'settings.backdropAcrylic',
++  clear: 'settings.backdropClear',
++};
+ const MATERIAL_OPTIONS = [...MATERIAL_CHOICES, 'clear'] as const;
+ 
+ const useSliderStyles = makeStyles({
+@@ -165,11 +162,6 @@ export function BackgroundSourceRows() {
+             atom={clearGlassLevelAtom}
+             choose={chooseClearGlassLevel}
+           />
+-          <ClearSliderRow
+-            title="settings.clearGlassWash"
+-            atom={clearGlassWashAtom}
+-            choose={chooseClearGlassWash}
+-          />
+         </>
+       )}
+     </>
+diff --git a/src/theme/ThemeRoot.tsx b/src/theme/ThemeRoot.tsx
+index f7ee309..a15acdb 100644
+--- a/src/theme/ThemeRoot.tsx
++++ b/src/theme/ThemeRoot.tsx
+@@ -10,7 +10,6 @@ import {
+   backdropSolidAtom,
+   clearGlassActiveAtom,
+   clearGlassLevelAtom,
+-  clearGlassWashAtom,
+ } from './backdrop.ts';
+ import { colorSchemeAtom } from './colorScheme.ts';
+ import { ACRYLIC_ROLES, ROLE_VALUES, roleProperties } from './roles.ts';
+@@ -104,16 +103,31 @@ export interface ThemeRootProps {
+  * 页面语言跟着界面语言走：读屏按它选发音，中日韩文字按它选字形
+  */
+ /** Immersive layers read these when clear glass is on (see ImmersiveView, PresetsScene, PaperScene, PaperCoverWash) */
+-function clearGlassVars(level: number, wash: number): string {
+-  const paper = ((level / 100) * 0.6).toFixed(3);
++function clearGlassVars(level: number): string {
++  // the boxes behind the readings (Blueprint's panel and lyric card, the lyrics column's shade) follow the
++  // "Glass opacity" slider; everything else is see-through
++  const box = Math.min(100, Math.round(level + 34));
++  const shade = ((level / 100) * 0.9).toFixed(3);
+   return (
+-    ' --glass-view-bg: transparent; --glass-scene-bg: transparent;' +
+-    ` --glass-paper-bg: rgba(16, 20, 26, ${paper});` +
+-    ` --glass-wash-opacity: ${(wash / 100).toFixed(2)};` +
++    ' --glass-view-bg: transparent; --glass-scene-bg: transparent; --glass-paper-bg: transparent;' +
++    ` --glass-pad-bg: color-mix(in srgb, rgb(16, 20, 26) ${box}%, transparent);` +
++    ` --glass-shade: rgba(8, 10, 14, ${shade});` +
+     ' --glass-text-shadow: 0 1px 3px rgba(0,0,0,.6);'
+   );
+ }
+ 
++/** `data-glass` on the root while clear glass is in effect: immersive parts drop their backgrounds */
++function useGlassFlag(on: boolean): void {
++  useEffect(() => {
++    if (!on) return;
++    const root = document.documentElement;
++    root.dataset.glass = '';
++    return () => {
++      delete root.dataset.glass;
++    };
++  }, [on]);
++}
++
+ export function ThemeRoot({ children }: ThemeRootProps) {
+   const rootRef = useRef<HTMLDivElement>(null);
+   useScrollbarActivity(rootRef);
+@@ -124,7 +138,7 @@ export function ThemeRoot({ children }: ThemeRootProps) {
+   const material = useAtomValueRawSync(materialAtom);
+   const clear = useAtomValueRawSync(clearGlassActiveAtom);
+   const clearLevel = useAtomValueRawSync(clearGlassLevelAtom);
+-  const clearWash = useAtomValueRawSync(clearGlassWashAtom);
++  useGlassFlag(clear);
+   const acrylic = material === 'acrylic' && !clear;
+   const source = useAtomValueRawSync(backgroundSourceAtom);
+   const drawn = source !== 'material';
+@@ -197,7 +211,7 @@ export function ThemeRoot({ children }: ThemeRootProps) {
+   return (
+     <FluentProvider ref={rootRef} theme={theme} className={className} style={style}>
+       {/* Portal 复制类名而不复制行内变量；作用域规则让覆盖面板共享同一份不透明底色。 */}
+-      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground};${clear ? ` --bg-pane: color-mix(in srgb, ${tokens.colorNeutralBackground1} ${clearLevel}%, transparent);` : ''} }\n${clear ? `:root { ${clearGlassVars(clearLevel, clearWash)} }\n:root[data-immersive] #root { visibility: hidden; }\n` : ''}${SCROLLBAR_CSS_RULES}`}</style>
++      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground};${clear ? ` --bg-pane: color-mix(in srgb, ${tokens.colorNeutralBackground1} ${clearLevel}%, transparent);` : ''} }\n${clear ? `:root { ${clearGlassVars(clearLevel)} }\n:root[data-immersive] #root { visibility: hidden; }\n` : ''}${SCROLLBAR_CSS_RULES}`}</style>
+       <WindowBackground
+         solidColor={tintedSurface(tokens.colorNeutralBackground2, tone, scheme, {
+           tint: themeTint,
+diff --git a/src/theme/backdrop.ts b/src/theme/backdrop.ts
+index 5d81a39..96740dc 100644
+--- a/src/theme/backdrop.ts
++++ b/src/theme/backdrop.ts
+@@ -139,10 +139,23 @@ export const backdropSolidAtom = atom(
+     get(choicePref.atom) === 'none' ||
+     (get(effectiveAtom) === 'none' && !get(clearPref.atom)),
+ );
+-/** Clear glass is in effect: user chose it, native materials work, and the window background is the material */
++/**
++ * Clear glass is for the immersive view only: while it is up the window turns to glass; the rest of the app
++ * keeps Mica. The immersive view says when it is up
++ */
++const immersiveUpAtom = atom(false);
++export function setImmersiveUp(store: Store, up: boolean): void {
++  store.set(immersiveUpAtom, up);
++}
++
++/**
++ * Clear glass is in effect: user chose it, the immersive view is up, native materials work, and the window
++ * background is the material
++ */
+ export const clearGlassActiveAtom: Atom<boolean> = atom(
+   (get) =>
+     get(clearPref.atom) &&
++    get(immersiveUpAtom) &&
+     get(backdropFallbackAtom) === null &&
+     get(choicePref.atom) !== 'none' &&
+     get(backgroundSourceAtom) === 'material',
+@@ -278,8 +291,10 @@ export function startBackdrop(
+     const drawn = store.get(backgroundSourceAtom) !== 'material';
+     const wanted =
+       drawn || !store.get(nativeMaterialsAllowedAtom) ? 'none' : store.get(choicePref.atom);
+-    const clear = wanted !== 'none' && store.get(clearPref.atom);
+-    const choice: BackdropChoice = clear ? 'none' : wanted;
++    const glass = wanted !== 'none' && store.get(clearPref.atom);
++    const clear = glass && store.get(immersiveUpAtom);
++    // clear glass: glass while the immersive view is up, Mica everywhere else
++    const choice: BackdropChoice = clear ? 'none' : glass ? 'mica' : wanted;
+     const darkMode = store.get(colorSchemeAtom) === 'dark';
+     if (sent?.choice === choice && sent.darkMode === darkMode && sent.clear === clear) return;
+     sent = { choice, darkMode, clear };
+@@ -337,6 +352,7 @@ export function startBackdrop(
+ 
+   const offScheme = store.sub(colorSchemeAtom, send);
+   const offClear = store.sub(clearPref.atom, send);
++  const offImmersive = store.sub(immersiveUpAtom, send);
+   const offSource = store.sub(backgroundSourceAtom, send);
+ 
+   return {
+@@ -364,6 +380,7 @@ export function startBackdrop(
+       offEvent?.();
+       offScheme();
+       offClear();
++      offImmersive();
+       offSource();
+     },
+   };
+-- 
+2.43.0
+

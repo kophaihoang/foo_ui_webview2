@@ -1,0 +1,851 @@
+From 0586c0332219599e6121760832306a08ea68847a Mon Sep 17 00:00:00 2001
+From: LVH <kophaileviethoang@gmail.com>
+Date: Sun, 1 Nov 2026 17:11:08 +0000
+Subject: [PATCH 01/16] Clear glass backdrop, Immersive transparency, touchpad
+ swipe and one-tap view cycle
+
+- Clear glass material: see-through window with glass opacity and cover glow sliders
+- Immersive view goes transparent and hides the main window underneath
+- Coverflow: sideways touchpad swipe, preload up-next covers
+- Tap the album cover to cycle Blueprint -> Lyrics -> Coverflow
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/i18n/settingsEn.ts                       |   3 +
+ src/i18n/settingsZhCN.ts                     |   3 +
+ src/immersive/backdrop/Backdrop.module.css   |   2 +
+ src/immersive/cover-art/CoverArt.module.css  |  13 +++
+ src/immersive/cover-art/CoverArt.tsx         |   6 ++
+ src/immersive/coverflow/Coverflow.module.css |   2 +
+ src/immersive/coverflow/Coverflow.tsx        |  34 ++++++-
+ src/immersive/dial/DialCover.module.css      |   2 +
+ src/immersive/dial/DialCover.tsx             |  13 ++-
+ src/immersive/page/ImmersiveView.module.css  |   2 +-
+ src/immersive/page/ImmersiveView.tsx         |  10 ++
+ src/immersive/page/PresetsScene.module.css   |   2 +-
+ src/immersive/page/PresetsScene.tsx          |   4 +
+ src/immersive/page/viewCycle.ts              |  29 ++++++
+ src/immersive/paper/PaperScene.module.css    |   3 +-
+ src/immersive/scene/sceneActions.ts          |   5 +
+ src/immersive/wash/PaperCoverWash.module.css |   1 +
+ src/settings/BackgroundSourceRows.tsx        |  90 +++++++++++++++--
+ src/theme/ThemeRoot.tsx                      |  42 +++++++-
+ src/theme/backdrop.ts                        | 100 +++++++++++++++++--
+ 20 files changed, 336 insertions(+), 30 deletions(-)
+ create mode 100644 src/immersive/page/viewCycle.ts
+
+diff --git a/src/i18n/settingsEn.ts b/src/i18n/settingsEn.ts
+index feb3719..9513bce 100644
+--- a/src/i18n/settingsEn.ts
++++ b/src/i18n/settingsEn.ts
+@@ -87,6 +87,9 @@ export const settingsEn = {
+   'settings.backdropMica': 'Mica',
+   'settings.backdropMicaAlt': 'Mica Alt',
+   'settings.backdropAcrylic': 'Acrylic',
++  'settings.backdropClear': 'Clear glass',
++  'settings.clearGlassLevel': 'Glass opacity (0 = see-through)',
++  'settings.clearGlassWash': 'Cover color glow',
+   'settings.backdropWindows10': 'Windows 10 uses the theme color background',
+   'settings.backdropUnknown':
+     'System material support is unknown. Using the theme color background.',
+diff --git a/src/i18n/settingsZhCN.ts b/src/i18n/settingsZhCN.ts
+index 2a50e88..e52884b 100644
+--- a/src/i18n/settingsZhCN.ts
++++ b/src/i18n/settingsZhCN.ts
+@@ -88,6 +88,9 @@ export const settingsZhCN: Record<keyof typeof settingsEn, string> = {
+   'settings.backdropMica': 'Mica',
+   'settings.backdropMicaAlt': 'Mica Alt',
+   'settings.backdropAcrylic': 'Acrylic',
++  'settings.backdropClear': '透明玻璃',
++  'settings.clearGlassLevel': '玻璃不透明度',
++  'settings.clearGlassWash': '封面色光晕',
+   'settings.backdropWindows10': 'Windows 10 使用主题色背景',
+   'settings.backdropUnknown': '无法确认系统材质支持情况，暂用主题色背景',
+   'settings.backdropFailed': '窗口材质未能应用，暂用主题色背景',
+diff --git a/src/immersive/backdrop/Backdrop.module.css b/src/immersive/backdrop/Backdrop.module.css
+index 600be7a..0492cd0 100644
+--- a/src/immersive/backdrop/Backdrop.module.css
++++ b/src/immersive/backdrop/Backdrop.module.css
+@@ -4,6 +4,8 @@
+   inset: 0;
+   overflow: hidden;
+   pointer-events: none;
++  /* clear glass: the cover-color backdrop follows the "Cover color glow" slider */
++  opacity: var(--glass-wash-opacity, 1);
+ }
+ 
+ .backdrop > canvas {
+diff --git a/src/immersive/cover-art/CoverArt.module.css b/src/immersive/cover-art/CoverArt.module.css
+index 75a6af8..3ccfa6a 100644
+--- a/src/immersive/cover-art/CoverArt.module.css
++++ b/src/immersive/cover-art/CoverArt.module.css
+@@ -9,6 +9,19 @@
+   color: var(--text-muted);
+ }
+ 
++.cover[data-cycle] {
++  cursor: pointer;
++  transition: transform var(--motion-faster) var(--curveEasyEase);
++}
++
++.cover[data-cycle]:hover {
++  transform: scale(1.015);
++}
++
++.cover[data-cycle]:active {
++  transform: scale(0.985);
++}
++
+ .cover[data-shadow] {
+   box-shadow: 0 16px 48px var(--scene-shadow, var(--colorNeutralShadowKeyDarker));
+ }
+diff --git a/src/immersive/cover-art/CoverArt.tsx b/src/immersive/cover-art/CoverArt.tsx
+index 2701d4e..1609199 100644
+--- a/src/immersive/cover-art/CoverArt.tsx
++++ b/src/immersive/cover-art/CoverArt.tsx
+@@ -7,6 +7,8 @@ import { CoverLayers } from '../../playback/now-playing/CoverLayers.tsx';
+ import { useLease } from '../lease/useLease.ts';
+ import { SCENE_COVER_LAYER } from '../scene/coverHolders.ts';
+ import { useCoverHolder } from '../scene/useCoverHolder.ts';
++import { SceneActionsContext } from '../scene/sceneContext.ts';
++import { useContext } from 'react';
+ import styles from './CoverArt.module.css';
+ 
+ export interface CoverArtProps {
+@@ -32,6 +34,8 @@ export function CoverArt({ radius = 12, shadow = true }: CoverArtProps) {
+   const cover = useAtomValueRawSync(immersiveCoverAtom);
+   const service = useLease(immersiveCoverKey);
+   const holder = useCoverHolder(SCENE_COVER_LAYER);
++  // one-tap view cycle: Lyrics → Coverflow
++  const actions = useContext(SceneActionsContext);
+   // 封面未就绪时保持中性底色以防闪烁
+   const waiting = cover.status === 'loading' && cover.url === null;
+   // 基于图片令牌回报解码完成状态，丢弃过期回调
+@@ -44,6 +48,8 @@ export function CoverArt({ radius = 12, shadow = true }: CoverArtProps) {
+       className={styles.cover}
+       data-scene-element="cover"
+       data-shadow={shadow || undefined}
++      data-cycle={actions ? '' : undefined}
++      onClick={actions ? () => actions.setMode('coverflow') : undefined}
+       style={{ '--cover-radius': `${radius}px` } as CSSProperties}
+       aria-hidden
+     >
+diff --git a/src/immersive/coverflow/Coverflow.module.css b/src/immersive/coverflow/Coverflow.module.css
+index a425664..cc213a0 100644
+--- a/src/immersive/coverflow/Coverflow.module.css
++++ b/src/immersive/coverflow/Coverflow.module.css
+@@ -7,6 +7,8 @@
+   inset: 0;
+   overflow: hidden;
+   outline: none;
++  overscroll-behavior: contain;
++  touch-action: none;
+ }
+ 
+ .card {
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index 7a79892..b62157e 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -18,6 +18,7 @@ import { pathOf } from '../../playback/queue/queueMenu.ts';
+ import type { RowPoint } from '../../playback/queue/QueueRow.tsx';
+ import { queueKey } from '../../playback/queue/queueServices.ts';
+ import { upEarlierAtom, upNextAtom } from '../../playback/queue/upNext.ts';
++import { cycleFromCoverflow } from '../page/viewCycle.ts';
+ import { createWheelStepper } from '../../playback/volume/wheelSteps.ts';
+ import { coverflowItemsAtom } from '../scene/coverflowAtoms.ts';
+ import { currentIndexOf, selectedIndexOf } from '../scene/coverflowItems.ts';
+@@ -101,6 +102,14 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     const wanted = depth + EARLIER_AHEAD;
+     void queue.upNext.readEarlier(Math.max(0, earlier.total - wanted), earlier.total - 1);
+   }, [queue, earlier.total, earlier.version, earlier.refreshing, depth]);
++  // show the songs coming up on the right too: read the next page of the playing list ahead of the browse depth
++  const upNext = useAtomValueRawSync(upNextAtom);
++  const ahead = Math.max(0, selected - currentAt);
++  useEffect(() => {
++    if (upNext.total <= 0 || upNext.refreshing) return;
++    const last = Math.min(upNext.total - 1, ahead + EARLIER_AHEAD);
++    void queue.upNext.readRange(0, last);
++  }, [queue, upNext.total, upNext.version, upNext.refreshing, ahead]);
+   // 补间过渡期间的可见渲染跨度（首尾两端可见窗口并集）
+   const [span, setSpan] = useState({ from: selected, to: selected });
+   const indexes = visibleIndexes(span.from, span.to, items.length);
+@@ -155,8 +164,11 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+   const activate = (key: string) => {
+     const at = store.get(coverflowItemsAtom).findIndex((item) => item.key === key);
+     if (at < 0) return;
+-    if (at === selectedNow()) void play(true);
+-    else selectIndex(at);
++    if (at === selectedNow()) {
++      // one-tap view cycle: tapping the playing cover goes on to Blueprint; a browsed cover still plays
++      if (store.get(coverflowItemsAtom)[at]?.kind === 'current') cycleFromCoverflow(store);
++      else void play(true);
++    } else selectIndex(at);
+   };
+   // 右键呼出上下文菜单时不改变当前焦点选中项
+   const openMenu = (key: string, at: RowPoint) => {
+@@ -271,6 +283,16 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+   useEffect(() => () => engine.dispose(), [engine]);
+   // 进入模式后将焦点转移至舞台容器以拦截方向键
+   useLayoutEffect(() => root.current?.focus({ preventScroll: true }), []);
++  // keep sideways swipes for the covers: stop the browser from treating them as back/forward gestures
++  useEffect(() => {
++    const element = root.current;
++    if (!element) return;
++    const hold = (event: globalThis.WheelEvent) => {
++      if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) event.preventDefault();
++    };
++    element.addEventListener('wheel', hold, { passive: false });
++    return () => element.removeEventListener('wheel', hold);
++  }, []);
+ 
+   const style: CSSProperties & Record<`--${string}`, string> = {
+     '--cf-cover': `${layout.cover}px`,
+@@ -289,7 +311,13 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+         data-scene-element="coverflow"
+         data-key-pass
+         onWheel={(event: WheelEvent) => {
+-          const steps = stepper(event);
++          // two-finger swipe on a touchpad: sideways swipes move the covers too (right = next)
++          const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
++          const steps = stepper({
++            deltaY: sideways ? event.deltaX : event.deltaY,
++            deltaMode: event.deltaMode,
++            timeStamp: event.timeStamp,
++          });
+           if (steps !== 0) step(-steps);
+         }}
+       >
+diff --git a/src/immersive/dial/DialCover.module.css b/src/immersive/dial/DialCover.module.css
+index 16dc5f9..ae5149c 100644
+--- a/src/immersive/dial/DialCover.module.css
++++ b/src/immersive/dial/DialCover.module.css
+@@ -5,6 +5,8 @@
+   color: var(--colorNeutralForeground3);
+   background: var(--colorNeutralBackground3);
+   overflow: hidden;
++  cursor: pointer;
++  pointer-events: auto;
+ }
+ 
+ .art {
+diff --git a/src/immersive/dial/DialCover.tsx b/src/immersive/dial/DialCover.tsx
+index c360984..11fc09b 100644
+--- a/src/immersive/dial/DialCover.tsx
++++ b/src/immersive/dial/DialCover.tsx
+@@ -1,9 +1,10 @@
+ import { Record48Regular } from '@fluentui/react-icons';
+-import { useAtomValueRawSync } from 'jotai/react';
++import { useAtomValueRawSync, useStore } from 'jotai/react';
+ import type { CSSProperties } from 'react';
+ import { immersiveCoverAtom } from '../../covers/immersiveCover.ts';
+ import { FadeImage } from '../../kit/FadeImage.tsx';
+ import { useViewServices } from '../page/viewServices.ts';
++import { cycleFromBlueprint } from '../page/viewCycle.ts';
+ import styles from './DialCover.module.css';
+ 
+ export interface DialCoverProps {
+@@ -20,10 +21,18 @@ export interface DialCoverProps {
+ export function DialCover({ box, guard }: DialCoverProps) {
+   const cover = useAtomValueRawSync(immersiveCoverAtom);
+   const services = useViewServices();
++  const store = useStore();
+   const url = cover.status === 'missing' ? null : cover.url;
+   const { token } = cover;
+   return (
+-    <div className={styles.cover} style={box} data-decor-guard={guard} data-dial-cover>
++    <div
++      className={styles.cover}
++      style={box}
++      data-decor-guard={guard}
++      data-dial-cover
++      // one-tap view cycle: Blueprint → Lyrics
++      onClick={() => cycleFromBlueprint(store)}
++    >
+       <Record48Regular />
+       {/* 按身份换元素：上一张图晚到的 load / error 带的是旧身份，进不了当前这一张。 */}
+       {url && (
+diff --git a/src/immersive/page/ImmersiveView.module.css b/src/immersive/page/ImmersiveView.module.css
+index 8d662f4..699a5f2 100644
+--- a/src/immersive/page/ImmersiveView.module.css
++++ b/src/immersive/page/ImmersiveView.module.css
+@@ -4,7 +4,7 @@
+   position: fixed;
+   inset: 0;
+   overflow: hidden;
+-  background: var(--colorNeutralBackground2);
++  background: var(--glass-view-bg, var(--colorNeutralBackground2));
+   color: var(--colorNeutralForeground1);
+   outline: none;
+ }
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index b6981d5..37b41bb 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -105,6 +105,16 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+     return attachImmersiveRoot(element);
+   }, [current]);
+ 
++  // clear glass: the view is see-through, so hide the main window underneath while it is up
++  useEffect(() => {
++    if (!current) return;
++    const html = document.documentElement;
++    html.dataset.immersive = '';
++    return () => {
++      delete html.dataset.immersive;
++    };
++  }, [current]);
++
+   // Tab 回绕的哨兵：焦点从层里的键退到哨兵上（Tab 走过了头）就绕到另一头的键；从根元素进来就落在近的这一头
+   // 层里一颗能拿焦点的键都没有时回到根元素
+   const guard = (edge: 'start' | 'end') => (event: FocusEvent<HTMLSpanElement>) => {
+diff --git a/src/immersive/page/PresetsScene.module.css b/src/immersive/page/PresetsScene.module.css
+index ca27cd8..fa7b128 100644
+--- a/src/immersive/page/PresetsScene.module.css
++++ b/src/immersive/page/PresetsScene.module.css
+@@ -1,5 +1,5 @@
+ .scene {
+   position: absolute;
+   inset: 0;
+-  background: var(--colorNeutralBackground1);
++  background: var(--glass-scene-bg, var(--colorNeutralBackground1));
+ }
+diff --git a/src/immersive/page/PresetsScene.tsx b/src/immersive/page/PresetsScene.tsx
+index 5981532..a7a4236 100644
+--- a/src/immersive/page/PresetsScene.tsx
++++ b/src/immersive/page/PresetsScene.tsx
+@@ -18,6 +18,7 @@ import {
+   createSceneActions,
+   presetIdAtoms,
+   resetScene,
++  forceSceneMode,
+   restoreScene,
+   sceneStateAtom,
+   type SceneSnapshot,
+@@ -27,6 +28,7 @@ import { startPagePref } from '../scene/scenePrefs.ts';
+ import { immersiveFpsCapAtom } from './immersivePrefs.ts';
+ import { PresetLayers } from './PresetLayers.tsx';
+ import styles from './PresetsScene.module.css';
++import { takePresetsEntryMode } from './viewCycle.ts';
+ import { useSceneView } from './useSceneView.ts';
+ import { useViewServices } from './viewServices.ts';
+ 
+@@ -94,6 +96,8 @@ export function PresetsScene() {
+     const saved = entry ? SCENE_SLOT.values.get(entry) : undefined;
+     if (saved) restoreScene(store, saved);
+     else resetScene(store, store.get(startPagePref.atom));
++    const forced = takePresetsEntryMode();
++    if (forced) forceSceneMode(store, forced);
+   }, [store, entry]);
+   // 离开当前历史记录时截取场景快照，返回且组件仍存活时自动还原
+   usePageSnapshot(
+diff --git a/src/immersive/page/viewCycle.ts b/src/immersive/page/viewCycle.ts
+new file mode 100644
+index 0000000..a4023ab
+--- /dev/null
++++ b/src/immersive/page/viewCycle.ts
+@@ -0,0 +1,29 @@
++import type { Store } from '../../kit/store.ts';
++import { forceSceneMode } from '../scene/sceneActions.ts';
++import type { SceneMode } from '../scene/sceneState.ts';
++import { chooseImmersiveScene } from './immersivePrefs.ts';
++
++/**
++ * One-tap view cycle: tapping the album cover steps Blueprint → Lyrics → Coverflow → Blueprint.
++ * Blueprint is the `paper` scene; Lyrics and Coverflow are the `presets` scene with mode `none` / `coverflow`.
++ */
++let enterPresetsAs: SceneMode | null = null;
++
++/** Read once by the presets scene when it mounts, after it restored its own snapshot */
++export function takePresetsEntryMode(): SceneMode | null {
++  const mode = enterPresetsAs;
++  enterPresetsAs = null;
++  return mode;
++}
++
++/** Blueprint → Lyrics */
++export function cycleFromBlueprint(store: Store): void {
++  enterPresetsAs = 'none';
++  chooseImmersiveScene(store, 'presets');
++}
++
++/** Coverflow → Blueprint */
++export function cycleFromCoverflow(store: Store): void {
++  forceSceneMode(store, 'none');
++  chooseImmersiveScene(store, 'paper');
++}
+diff --git a/src/immersive/paper/PaperScene.module.css b/src/immersive/paper/PaperScene.module.css
+index 3b60ab1..434ffd6 100644
+--- a/src/immersive/paper/PaperScene.module.css
++++ b/src/immersive/paper/PaperScene.module.css
+@@ -16,8 +16,9 @@
+   position: absolute;
+   inset: 0;
+   overflow: hidden;
+-  background: var(--paper-tint);
++  background: var(--glass-paper-bg, var(--paper-tint));
+   color: var(--colorNeutralForeground1);
++  text-shadow: var(--glass-text-shadow, none);
+   /* 主题根带的是正文排印的绝对行高；舞台上的字按基线落位、盒子高由字号定，行高要回到随字号走 */
+   line-height: normal;
+ }
+diff --git a/src/immersive/scene/sceneActions.ts b/src/immersive/scene/sceneActions.ts
+index 3b0c8bf..23c62f5 100644
+--- a/src/immersive/scene/sceneActions.ts
++++ b/src/immersive/scene/sceneActions.ts
+@@ -58,6 +58,11 @@ export function resetScene(store: Store, startPage: SidebarPage): void {
+   store.set(stateAtom, initialSceneState(startPage));
+ }
+ 
++/** Set the scene mode right away, without a view transition (used by the one-tap view cycle) */
++export function forceSceneMode(store: Store, mode: SceneMode): void {
++  store.set(stateAtom, (state) => setMode(state, mode));
++}
++
+ /**
+  * 历史记录场景快照：包含侧栏页、展开方式与当前模式
+  *
+diff --git a/src/immersive/wash/PaperCoverWash.module.css b/src/immersive/wash/PaperCoverWash.module.css
+index d5f690c..003b275 100644
+--- a/src/immersive/wash/PaperCoverWash.module.css
++++ b/src/immersive/wash/PaperCoverWash.module.css
+@@ -5,6 +5,7 @@
+   overflow: hidden;
+   pointer-events: none;
+   color: var(--paper-tint);
++  opacity: var(--glass-wash-opacity, 1);
+ }
+ 
+ /* 两档的根元素自己铺满这一层，这里只管显隐 */
+diff --git a/src/settings/BackgroundSourceRows.tsx b/src/settings/BackgroundSourceRows.tsx
+index 91c661e..52b0465 100644
+--- a/src/settings/BackgroundSourceRows.tsx
++++ b/src/settings/BackgroundSourceRows.tsx
+@@ -1,4 +1,7 @@
++import { Slider, makeStyles } from '@fluentui/react-components';
+ import { useAtomValueRawSync, useStore } from 'jotai/react';
++import type { Atom } from 'jotai/vanilla';
++import type { Store } from '../kit/store.ts';
+ import type { MessageKey } from '../i18n/en.ts';
+ import { translateAtom } from '../i18n/locale.ts';
+ import { useService } from '../kit/useService.ts';
+@@ -6,13 +9,20 @@ import {
+   backdropChoiceAtom,
+   backdropFallbackAtom,
+   backdropKey,
++  clearGlassAtom,
++  clearGlassLevelAtom,
++  clearGlassWashAtom,
++  chooseClearGlassLevel,
++  chooseClearGlassWash,
+   nativeMaterialsAllowedAtom,
+ } from '../theme/backdrop.ts';
+ import {
+   backgroundPreferencesAtom,
+   chooseBackgroundSource,
+ } from '../theme/background/windowBackground.ts';
++import styles from './BackdropExpander.module.css';
+ import { SettingsChoice } from './SettingsChoice.tsx';
++import { useSettingsLayout } from './useSettingsLayout.ts';
+ import { SettingsRow } from './SettingsRow.tsx';
+ import { SettingsSegmented } from './SettingsSegmented.tsx';
+ import { BackgroundThumb } from './thumbnails/BackgroundThumb.tsx';
+@@ -33,12 +43,50 @@ const TILE_LABELS: Readonly<Record<BackgroundTile, MessageKey>> = {
+   image: 'settings.backgroundImage',
+ };
+ 
+-const MATERIAL_LABELS: Readonly<Record<(typeof MATERIAL_CHOICES)[number], MessageKey>> = {
+-  inherit: 'settings.backdropInherit',
+-  mica: 'settings.backdropMica',
+-  'mica-alt': 'settings.backdropMicaAlt',
+-  acrylic: 'settings.backdropAcrylic',
+-};
++const MATERIAL_LABELS: Readonly<Record<(typeof MATERIAL_CHOICES)[number] | 'clear', MessageKey>> =
++  {
++    inherit: 'settings.backdropInherit',
++    mica: 'settings.backdropMica',
++    'mica-alt': 'settings.backdropMicaAlt',
++    acrylic: 'settings.backdropAcrylic',
++    clear: 'settings.backdropClear',
++  };
++const MATERIAL_OPTIONS = [...MATERIAL_CHOICES, 'clear'] as const;
++
++const useSliderStyles = makeStyles({
++  rail: { '::before': { display: 'none' } },
++});
++
++function ClearSliderRow(props: {
++  title: MessageKey;
++  atom: Atom<number>;
++  choose: (store: Store, value: number) => void;
++}) {
++  const t = useAtomValueRawSync(translateAtom);
++  const value = useAtomValueRawSync(props.atom);
++  const store = useStore();
++  const { compact } = useSettingsLayout();
++  const classes = useSliderStyles();
++  return (
++    <SettingsRow title={t(props.title)} field>
++      {({ labelId }) => (
++        <div className={compact ? `${styles.control} ${styles.fill}` : styles.control}>
++          <Slider
++            rail={{ className: classes.rail }}
++            min={0}
++            max={100}
++            step={1}
++            value={value}
++            aria-labelledby={labelId}
++            aria-valuetext={`${value}%`}
++            onChange={(_, data) => props.choose(store, data.value)}
++          />
++          <output className={styles.value}>{value}%</output>
++        </div>
++      )}
++    </SettingsRow>
++  );
++}
+ 
+ /** 当前激活的背景来源分类，供大图选项与卡头收起缩略图读取 */
+ export function useBackgroundTile(): BackgroundTile {
+@@ -62,7 +110,10 @@ export function BackgroundSourceRows() {
+   const allowed = useAtomValueRawSync(nativeMaterialsAllowedAtom);
+   const absent = useHostAbsent();
+   const nativeOff = absent || !allowed;
+-  const material = MATERIAL_CHOICES.find((value) => value === choice) ?? 'inherit';
++  const clear = useAtomValueRawSync(clearGlassAtom);
++  const material = clear
++    ? 'clear'
++    : (MATERIAL_CHOICES.find((value) => value === choice) ?? 'inherit');
+   return (
+     <>
+       <SettingsRow title={t('settings.backdropSourceTitle')} block>
+@@ -90,16 +141,37 @@ export function BackgroundSourceRows() {
+             <SettingsSegmented
+               label={t('settings.backdropMaterialTitle')}
+               disabled={nativeOff}
+-              options={MATERIAL_CHOICES.map((value) => ({
++              options={MATERIAL_OPTIONS.map((value) => ({
+                 value,
+                 label: t(MATERIAL_LABELS[value]),
+               }))}
+               value={material}
+-              onChange={(value) => backdrop.choose(value)}
++              onChange={(value) => {
++                if (value === 'clear') {
++                  backdrop.chooseClear(true);
++                  return;
++                }
++                backdrop.chooseClear(false);
++                backdrop.choose(value);
++              }}
+             />
+           )}
+         </SettingsRow>
+       )}
++      {tile === 'material' && clear && (
++        <>
++          <ClearSliderRow
++            title="settings.clearGlassLevel"
++            atom={clearGlassLevelAtom}
++            choose={chooseClearGlassLevel}
++          />
++          <ClearSliderRow
++            title="settings.clearGlassWash"
++            atom={clearGlassWashAtom}
++            choose={chooseClearGlassWash}
++          />
++        </>
++      )}
+     </>
+   );
+ }
+diff --git a/src/theme/ThemeRoot.tsx b/src/theme/ThemeRoot.tsx
+index 9e43695..f7ee309 100644
+--- a/src/theme/ThemeRoot.tsx
++++ b/src/theme/ThemeRoot.tsx
+@@ -5,7 +5,13 @@ import { createDarkTheme, createLightTheme } from '@fluentui/react-components';
+ import { localeAtom } from '../i18n/locale.ts';
+ import { reducedMotionAtom } from '../motion/reducedMotion.ts';
+ import { MOTION_VARIABLES, REDUCED_MOTION_VARIABLES } from '../motion/timing.ts';
+-import { materialAtom, backdropSolidAtom } from './backdrop.ts';
++import {
++  materialAtom,
++  backdropSolidAtom,
++  clearGlassActiveAtom,
++  clearGlassLevelAtom,
++  clearGlassWashAtom,
++} from './backdrop.ts';
+ import { colorSchemeAtom } from './colorScheme.ts';
+ import { ACRYLIC_ROLES, ROLE_VALUES, roleProperties } from './roles.ts';
+ import { accentRampAtom, globalAccentToneAtom } from './accentState.ts';
+@@ -55,6 +61,21 @@ const useStyles = makeStyles({
+   reducedMotion: REDUCED_MOTION_VARIABLES,
+   acrylicLight: roleProperties(ACRYLIC_ROLES.light),
+   acrylicDark: roleProperties(ACRYLIC_ROLES.dark),
++  // clear glass: nothing painted behind the window, panes only a light smoke so text stays legible
++  clearLight: {
++    ...roleProperties({
++      'bg-app': 'transparent',
++      'bg-pane': `color-mix(in srgb, ${tokens.colorNeutralBackground1} 46%, transparent)`,
++    }),
++    textShadow: '0 1px 2px rgba(255,255,255,.55)',
++  },
++  clearDark: {
++    ...roleProperties({
++      'bg-app': 'transparent',
++      'bg-pane': `color-mix(in srgb, ${tokens.colorNeutralBackground1} 42%, transparent)`,
++    }),
++    textShadow: '0 1px 2px rgba(0,0,0,.6)',
++  },
+   solid: roleProperties({
+     'bg-app': 'transparent',
+     'bg-pane': tokens.colorNeutralBackgroundAlpha2,
+@@ -82,6 +103,17 @@ export interface ThemeRootProps {
+  * 主题根：按系统深浅选档，挂上语义变量与动效变量，并按宿主实际用的材质调底色浓度
+  * 页面语言跟着界面语言走：读屏按它选发音，中日韩文字按它选字形
+  */
++/** Immersive layers read these when clear glass is on (see ImmersiveView, PresetsScene, PaperScene, PaperCoverWash) */
++function clearGlassVars(level: number, wash: number): string {
++  const paper = ((level / 100) * 0.6).toFixed(3);
++  return (
++    ' --glass-view-bg: transparent; --glass-scene-bg: transparent;' +
++    ` --glass-paper-bg: rgba(16, 20, 26, ${paper});` +
++    ` --glass-wash-opacity: ${(wash / 100).toFixed(2)};` +
++    ' --glass-text-shadow: 0 1px 3px rgba(0,0,0,.6);'
++  );
++}
++
+ export function ThemeRoot({ children }: ThemeRootProps) {
+   const rootRef = useRef<HTMLDivElement>(null);
+   useScrollbarActivity(rootRef);
+@@ -90,7 +122,10 @@ export function ThemeRoot({ children }: ThemeRootProps) {
+   const scheme = useAtomValueRawSync(colorSchemeAtom);
+   const reduced = useAtomValueRawSync(reducedMotionAtom);
+   const material = useAtomValueRawSync(materialAtom);
+-  const acrylic = material === 'acrylic';
++  const clear = useAtomValueRawSync(clearGlassActiveAtom);
++  const clearLevel = useAtomValueRawSync(clearGlassLevelAtom);
++  const clearWash = useAtomValueRawSync(clearGlassWashAtom);
++  const acrylic = material === 'acrylic' && !clear;
+   const source = useAtomValueRawSync(backgroundSourceAtom);
+   const drawn = source !== 'material';
+   const solid = useAtomValueRawSync(backdropSolidAtom);
+@@ -139,6 +174,7 @@ export function ThemeRoot({ children }: ThemeRootProps) {
+     scheme === 'dark' ? styles.dark : styles.light,
+     reduced && styles.reducedMotion,
+     acrylic && (scheme === 'dark' ? styles.acrylicDark : styles.acrylicLight),
++    clear && (scheme === 'dark' ? styles.clearDark : styles.clearLight),
+     solid && !drawn && styles.solid,
+     drawn && styles.drawn,
+     drawn && scheme === 'dark' && styles.drawnDark,
+@@ -161,7 +197,7 @@ export function ThemeRoot({ children }: ThemeRootProps) {
+   return (
+     <FluentProvider ref={rootRef} theme={theme} className={className} style={style}>
+       {/* Portal 复制类名而不复制行内变量；作用域规则让覆盖面板共享同一份不透明底色。 */}
+-      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground}; }\n${SCROLLBAR_CSS_RULES}`}</style>
++      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground};${clear ? ` --bg-pane: color-mix(in srgb, ${tokens.colorNeutralBackground1} ${clearLevel}%, transparent);` : ''} }\n${clear ? `:root { ${clearGlassVars(clearLevel, clearWash)} }\n:root[data-immersive] #root { visibility: hidden; }\n` : ''}${SCROLLBAR_CSS_RULES}`}</style>
+       <WindowBackground
+         solidColor={tintedSurface(tokens.colorNeutralBackground2, tone, scheme, {
+           tint: themeTint,
+diff --git a/src/theme/backdrop.ts b/src/theme/backdrop.ts
+index bc27ea0..b559f24 100644
+--- a/src/theme/backdrop.ts
++++ b/src/theme/backdrop.ts
+@@ -8,7 +8,7 @@ import { waitForHost, type HostReadyFace } from '../host/waitForHost.ts';
+ import { settle } from '../host/hostCall.ts';
+ import { colorSchemeAtom } from './colorScheme.ts';
+ import { backgroundSourceAtom } from './background/windowBackground.ts';
+-import { defineLocalPref, type PrefStorage } from '../kit/localPref.ts';
++import { defineLocalPref, ON_OFF, type PrefStorage } from '../kit/localPref.ts';
+ import type { Store } from '../kit/store.ts';
+ import { serviceKey } from '../kit/serviceKey.ts';
+ 
+@@ -71,6 +71,40 @@ const choicePref = defineLocalPref<BackdropChoice>({
+   parse: (raw) => (isChoice(raw) ? raw : undefined),
+   format: (choice) => choice,
+ });
++/** Clear glass: no native backdrop, blur-behind on, page transparent, so the desktop shows through crisp */
++export const CLEAR_GLASS_KEY = 'default-theme.clear-glass.v1';
++const clearPref = defineLocalPref<boolean>({ key: CLEAR_GLASS_KEY, fallback: false, ...ON_OFF });
++export const clearGlassAtom: Atom<boolean> = clearPref.atom;
++
++function percentCodec() {
++  return {
++    parse: (raw: string) => {
++      const n = Number(raw);
++      return Number.isInteger(n) && n >= 0 && n <= 100 ? n : undefined;
++    },
++    format: (value: number) => String(value),
++  };
++}
++/** clear glass: how milky the panes are, 0 = fully see-through, 100 = solid */
++const clearLevelPref = defineLocalPref<number>({
++  key: 'default-theme.clear-glass-level.v1',
++  fallback: 40,
++  ...percentCodec(),
++});
++/** clear glass: strength of the blurred cover-color glow in Immersive */
++const clearWashPref = defineLocalPref<number>({
++  key: 'default-theme.clear-glass-wash.v1',
++  fallback: 40,
++  ...percentCodec(),
++});
++export const clearGlassLevelAtom: Atom<number> = clearLevelPref.atom;
++export const clearGlassWashAtom: Atom<number> = clearWashPref.atom;
++export function chooseClearGlassLevel(store: Store, value: number): void {
++  clearLevelPref.set(store, Math.round(value));
++}
++export function chooseClearGlassWash(store: Store, value: number): void {
++  clearWashPref.set(store, Math.round(value));
++}
+ const reportedAtom = atom<BackdropEffect | null>(null);
+ const platformAtom = atom<Platform>('checking');
+ const applicationAtom = atom<'idle' | 'pending' | 'applied' | 'failed'>('idle');
+@@ -102,7 +136,15 @@ export const backdropSolidAtom = atom(
+   (get) =>
+     get(backdropFallbackAtom) !== null ||
+     get(choicePref.atom) === 'none' ||
+-    get(effectiveAtom) === 'none',
++    (get(effectiveAtom) === 'none' && !get(clearPref.atom)),
++);
++/** Clear glass is in effect: user chose it, native materials work, and the window background is the material */
++export const clearGlassActiveAtom: Atom<boolean> = atom(
++  (get) =>
++    get(clearPref.atom) &&
++    get(backdropFallbackAtom) === null &&
++    get(choicePref.atom) !== 'none' &&
++    get(backgroundSourceAtom) === 'material',
+ );
+ export const backdropDiagnosticsAtom = atom((get) =>
+   [
+@@ -130,6 +172,8 @@ export interface BackdropService {
+   readonly ready: Promise<void>;
+   /** 切换材质偏好并持久化；宿主连接就绪时立即下发，未就绪时先更新本地状态 */
+   choose(choice: BackdropChoice): void;
++  /** Turn clear glass on or off (clear glass keeps the acrylic choice underneath) */
++  chooseClear(on: boolean): void;
+   dispose(): void;
+ }
+ 
+@@ -143,6 +187,9 @@ export function startBackdrop(
+   storage?: PrefStorage | null,
+ ): BackdropService {
+   choicePref.load(store, storage);
++  clearPref.load(store, storage);
++  clearLevelPref.load(store, storage);
++  clearWashPref.load(store, storage);
+   store.set(reportedAtom, null);
+   store.set(effectiveAtom, null);
+   store.set(platformAtom, 'checking');
+@@ -155,7 +202,7 @@ export function startBackdrop(
+   // 材质状态事件面向所有窗口广播，需依据 windowId 过滤本窗口事件；窗口 ID 获取前收到的事件暂存，获取后对齐补放
+   const early = new Map<string, { effect: BackdropEffect; revision: number; received: number }>();
+   // 记录最近一次下发的材质与深浅参数，防止相同配置重复排队
+-  let sent: { choice: BackdropChoice; darkMode: boolean } | null = null;
++  let sent: { choice: BackdropChoice; darkMode: boolean; clear: boolean } | null = null;
+   let offEvent: (() => void) | undefined;
+   let revision = 0;
+   let reports = 0;
+@@ -163,7 +210,8 @@ export function startBackdrop(
+   let failureReceived = 0;
+   let sending = false;
+   let activeRevision: number | null = null;
+-  let queued: { choice: BackdropChoice; darkMode: boolean; revision: number } | null = null;
++  let queued: { choice: BackdropChoice; darkMode: boolean; clear: boolean; revision: number } | null =
++    null;
+   let failureTimer: ReturnType<typeof setTimeout> | undefined;
+   const waiter = waitForHost(host);
+ 
+@@ -186,14 +234,20 @@ export function startBackdrop(
+     if (sending || disposed) return;
+     sending = true;
+     while (queued && !disposed) {
+-      const { choice, darkMode, revision: mine } = queued;
++      const { choice, darkMode, clear, revision: mine } = queued;
+       queued = null;
+       activeRevision = mine;
+       const previousReports = reports;
+       // 隐藏窗口下发策略可能暂报失败；保留该请求以便窗口显示时继续应用，不篡改用户预期
+       const answer = await settle(() =>
+-        host.ui.setBackdropPolicy({ activeEffect: choice, inactiveEffect: 'inherit', darkMode }),
++        host.ui.setBackdropPolicy({
++          activeEffect: choice,
++          inactiveEffect: clear ? 'none' : 'inherit',
++          darkMode,
++        }),
+       );
++      // effect "none" + blur-behind = DWM shows what is behind the window through transparent pixels
++      await applyClearGlass(clear);
+       if (disposed || mine !== revision) continue;
+       if (answer?.success) {
+         if (reports === previousReports)
+@@ -217,12 +271,14 @@ export function startBackdrop(
+     if (disposed || !connected) return;
+     // 自绘背景需原生 WebView 提供不透明背景；若底层透明则自绘模糊层会穿透暴露底层内容；仅改写下发的策略材质，用户持久化偏好保持不变
+     const drawn = store.get(backgroundSourceAtom) !== 'material';
+-    const choice =
++    const wanted =
+       drawn || !store.get(nativeMaterialsAllowedAtom) ? 'none' : store.get(choicePref.atom);
++    const clear = wanted !== 'none' && store.get(clearPref.atom);
++    const choice: BackdropChoice = clear ? 'none' : wanted;
+     const darkMode = store.get(colorSchemeAtom) === 'dark';
+-    if (sent?.choice === choice && sent.darkMode === darkMode) return;
+-    sent = { choice, darkMode };
+-    queued = { choice, darkMode, revision: ++revision };
++    if (sent?.choice === choice && sent.darkMode === darkMode && sent.clear === clear) return;
++    sent = { choice, darkMode, clear };
++    queued = { choice, darkMode, clear, revision: ++revision };
+     clearFailure();
+     store.set(applicationAtom, 'pending');
+     // 状态事件不带请求 ID，通过串行排队下发隔离各版本响应
+@@ -275,6 +331,7 @@ export function startBackdrop(
+   }
+ 
+   const offScheme = store.sub(colorSchemeAtom, send);
++  const offClear = store.sub(clearPref.atom, send);
+   const offSource = store.sub(backgroundSourceAtom, send);
+ 
+   return {
+@@ -289,15 +346,38 @@ export function startBackdrop(
+       if (disposed || !choicePref.set(store, choice, storage)) return;
+       send();
+     },
++    chooseClear(on) {
++      if (disposed) return;
++      if (on && store.get(choicePref.atom) === 'none') choicePref.set(store, 'acrylic', storage);
++      clearPref.set(store, on, storage);
++      send();
++    },
+     dispose() {
+       disposed = true;
+       waiter.cancel();
+       clearTimeout(failureTimer);
+       offEvent?.();
+       offScheme();
++      offClear();
+       offSource();
+     },
+   };
+ }
+ 
++interface RawBridge {
++  invoke(method: string, params?: Record<string, unknown>): Promise<unknown>;
++}
++
++/** Blur-behind and a transparent WebView background are not wrapped by the SDK face; call the bridge directly */
++async function applyClearGlass(on: boolean): Promise<void> {
++  const bridge = (globalThis as { fb2k?: RawBridge }).fb2k;
++  if (!bridge) return;
++  try {
++    await bridge.invoke('window.setBlur', { enabled: on });
++    if (on) await bridge.invoke('window.setBackgroundTransparency', { transparent: true });
++  } catch {
++    // host refused: the window keeps its previous look
++  }
++}
++
+ export const backdropKey = serviceKey<BackdropService>('backdrop');
+-- 
+2.43.0
+

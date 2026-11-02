@@ -1,0 +1,90 @@
+.root {
+  padding-inline-start: var(--library-content-inset, 0px);
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: auto;
+  outline: none;
+}
+.space {
+  position: relative;
+  min-width: 100%;
+}
+.row {
+  position: absolute;
+  inset-inline: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalXS);
+  /* 滚动条贴在容器边缘，行尾照内容边线留白，与数字隔开一道 */
+  padding-inline-end: var(--library-content-inset, var(--spacingHorizontalM));
+  cursor: default;
+  border-radius: var(--borderRadiusMedium);
+  color: var(--colorNeutralForeground1);
+}
+.row:hover {
+  background-image: linear-gradient(var(--state-hover), var(--state-hover));
+}
+.row:active {
+  background-image: linear-gradient(var(--state-pressed), var(--state-pressed));
+}
+.row > svg {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+}
+.row[aria-selected='true'] {
+  background-color: var(--bg-selected);
+}
+@media (forced-colors: active) {
+  .row[aria-selected='true'] {
+    box-sizing: border-box;
+    border-block-end: var(--strokeWidthThick) solid Highlight;
+  }
+}
+.root:focus-visible .row[data-focused='true'] {
+  outline: 2px solid var(--colorStrokeFocus2);
+  outline-offset: -2px;
+}
+.toggle {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--borderRadiusSmall);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.toggle:enabled:hover {
+  background: var(--state-hover);
+}
+.toggle:enabled:active {
+  background: var(--state-pressed);
+}
+.chevron {
+  transition: transform var(--motion-fast) var(--curveDecelerateMid);
+}
+.row[aria-expanded='true'] .chevron {
+  transform: rotate(90deg);
+}
+.name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.count {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--colorNeutralForeground3);
+  font-size: var(--fontSizeBase200);
+}
+.empty {
+  padding: var(--spacingVerticalL) var(--spacingHorizontalL);
+  color: var(--colorNeutralForeground3);
+}

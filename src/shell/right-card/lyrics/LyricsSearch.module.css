@@ -1,0 +1,21 @@
+.root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+/* 右边的 --edge-bleed 是页面伸到窗口右缘的那一段，表单退回原来的右缘，结果区自己补右内边距 */
+.form {
+  display: grid;
+  gap: var(--spacingVerticalS);
+  margin-right: var(--edge-bleed, 0px);
+  padding: var(--spacingVerticalS) var(--spacingHorizontalM);
+}
+
+.results {
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: var(--edge-bleed, 0px);
+}

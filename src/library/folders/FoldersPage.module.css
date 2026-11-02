@@ -1,0 +1,38 @@
+/* 筛选浮层按页面根定位，只在页面范围内移动 */
+.root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding-top: var(--spacingVerticalL);
+  gap: var(--spacingVerticalM);
+  container: folders / inline-size;
+}
+.root > :not(.body) {
+  margin-inline: var(--spacingHorizontalL);
+}
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.browser {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  --library-content-inset: var(--spacingHorizontalL);
+  padding-inline-end: 0;
+}
+.notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacingHorizontalM);
+  margin: 0;
+  color: var(--colorNeutralForeground2);
+}

@@ -1,0 +1,100 @@
+/* 左边让出卡头的图标列，文字与卡头标题对齐；没有说明行时也是 52 高。图标宽取所在展开卡的 `--settings-icon-size` */
+.root {
+  position: relative;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--spacingHorizontalL);
+  min-height: 52px;
+  padding: var(--spacingVerticalS) var(--spacingHorizontalL) var(--spacingVerticalS)
+    calc(var(--spacingHorizontalL) * 2 + var(--settings-icon-size));
+}
+
+.root:not(:first-child) {
+  border-top: var(--strokeWidthThin) solid var(--line);
+}
+
+/* 从属行再缩进一级，标题退到次要文字色 */
+.nested {
+  padding-left: calc(
+    var(--spacingHorizontalL) * 2 + var(--settings-icon-size) + var(--spacingHorizontalXL)
+  );
+}
+
+.nested .title {
+  color: var(--text-secondary);
+}
+
+/* 控件换到标题下面，与文字左对齐、占满一行 */
+.stacked {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--spacingVerticalSNudge);
+  padding-bottom: var(--spacingVerticalM);
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalXXS);
+  min-width: 0;
+}
+
+/* 标题与附注同一行，放不下时附注换到下一行 */
+.heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--spacingHorizontalS);
+  min-width: 0;
+}
+
+.meta {
+  color: var(--text-muted);
+  font-size: var(--fontSizeBase200);
+  line-height: var(--lineHeightBase200);
+}
+
+.title {
+  color: var(--text-primary);
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+}
+
+.description {
+  color: var(--text-muted);
+  font-size: var(--fontSizeBase200);
+  line-height: var(--lineHeightBase200);
+}
+
+.error {
+  color: var(--error);
+}
+
+.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.disabled .title,
+.disabled .description {
+  color: var(--colorNeutralForegroundDisabled);
+}
+
+.control {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.stacked .control {
+  justify-content: stretch;
+}
+
+/* 缩略图组撑满整行，宽度由组自己按列数限 */
+.block .control {
+  display: block;
+}

@@ -1,0 +1,53 @@
+/* The cover's copy flying into Blueprint (`coverFlight.ts`): above the scenes, never in the way of the pointer.
+   Only its transform and the two layers' opacity animate, so the compositor runs the whole flight. */
+.plane {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  transform-origin: 0 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.square,
+.round {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--colorNeutralBackground3);
+}
+
+.square {
+  box-shadow: 0 16px 48px var(--colorNeutralShadowKeyDarker);
+}
+
+/* the record's label, as `DialCover`'s round cover draws it */
+.round {
+  opacity: 0;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 calc(var(--ring, 1px) * 2) rgba(0, 0, 0, 0.55),
+    0 0 0 calc(var(--ring, 1px) * 3) rgba(255, 255, 255, 0.08);
+}
+
+.square img,
+.round img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.spindle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4.5%;
+  height: 4.5%;
+  translate: -50% -50%;
+  border-radius: 50%;
+  background: radial-gradient(circle, #050506 0 45%, #2a2a2e 50% 70%, #0b0b0c 75%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}

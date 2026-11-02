@@ -1,0 +1,81 @@
+From 47234abaf323846e065d83b43a7e5f05b5e4cc5d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 1 Nov 2026 19:15:52 +0000
+Subject: [PATCH 09/16] Fold side follows the side the song was picked from;
+ probe keeps the press line
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/Coverflow.tsx | 15 +++++++++------
+ src/immersive/page/DragProbe.tsx      |  8 +++++++-
+ 2 files changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index 284c144..351da06 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -161,7 +161,10 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+       return;
+     }
+     const plan = playPlanOf(item);
+-    picked.current = true;
++    // which side the song comes from is known only now: by the time playback reports the new song the
++    // shuffle plan may already have moved its cursor, so the old card order no longer tells
++    const items = store.get(coverflowItemsAtom);
++    picked.current = selectedNow() > currentIndexOf(items) ? 'right' : 'left';
+     // 起播成功后暂存选中状态，避免数据表尚未响应切歌前视心回弹至旧曲目位置；待数据表更新且该曲目转为当前曲目后，由联动副作用重置浏览状态；起播失败时保留选中位置
+     if (plan) await perform(plan);
+   };
+@@ -261,7 +264,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     current: number;
+   } | null>(null);
+   /** A song was just started from a card here; its arrival is handled as following playback */
+-  const picked = useRef(false);
++  const picked = useRef<'left' | 'right' | null>(null);
+   useLayoutEffect(() => {
+     settle.current = () => setSpan({ from: selected, to: selected });
+     const keys = items.map((item) => item.key);
+@@ -273,16 +276,16 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     if (!before) {
+       engine.jumpTo(selected);
+       if (!leaving) engine.enter(selected);
+-    } else if (before.playing !== playing && (selected === currentAt || picked.current)) {
++    } else if (before.playing !== playing && (selected === currentAt || picked.current !== null)) {
+       // a new song while following playback (or one just picked here). Only a side whose songs changed
+       // folds back behind the playing cover and fans out again:
+       //  - the next song, or one picked on the right: the songs ahead only slide over, so they glide; the
+       //    side behind gains the song that just played, so it folds and fans out
+       //  - a song picked on the left (played before): both sides change, both fold
+-      picked.current = false;
++      // a song that just ran on by itself is the next one, so it came from the right
++      const fromRight = (picked.current ?? 'right') === 'right';
++      picked.current = null;
+       if (browsed !== null) sceneActions.browse(null);
+-      const was = before.keys.indexOf(items[currentAt]?.key ?? '');
+-      const fromRight = was >= 0 && was > before.current;
+       prior.current = { keys, selected: currentAt, playing, current: currentAt };
+       if (fromRight) {
+         engine.rekey(before.keys, keys, currentAt);
+diff --git a/src/immersive/page/DragProbe.tsx b/src/immersive/page/DragProbe.tsx
+index 9199461..7ca8a59 100644
+--- a/src/immersive/page/DragProbe.tsx
++++ b/src/immersive/page/DragProbe.tsx
+@@ -25,7 +25,13 @@ export function DragProbe() {
+       target: string;
+       regions: string;
+     } | null = null;
+-    const log = (line: string) => setLines((all) => [...all.slice(-7), line]);
++    const log = (line: string) =>
++      setLines((all) => {
++        // keep the press that started this round on top: it says what sat under the pointer
++        if (line.startsWith('DOWN')) return [line];
++        const [head, ...rest] = all;
++        return head?.startsWith('DOWN') ? [head, ...rest.slice(-8), line] : [...all.slice(-9), line];
++      });
+     const describe = (el: Element | null) =>
+       el
+         ? `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : ''}`
+-- 
+2.43.0
+

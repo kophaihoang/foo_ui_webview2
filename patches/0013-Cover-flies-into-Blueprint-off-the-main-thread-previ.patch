@@ -1,0 +1,1538 @@
+From d2810bb1d3769ea0f1db1bed7ef208f80a350b99 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 04:16:55 +0000
+Subject: [PATCH 13/16] Cover flies into Blueprint off the main thread;
+ previous follows the coverflow order
+
+- Lyrics -> Blueprint: no view transition. A copy of the cover flies (transform/opacity only) to the record
+  label, worked out from the window size (dial/recordGeometry.ts, shared with the dials); Blueprint mounts
+  after it lands and fades in around it; the label then shows and the record spins up. The wash joins the
+  deferred panels.
+- Previous in the immersive view: restarts the song past 3 s, otherwise plays the card just left of the
+  playing one; with the shuffle plan the plan steps back (playAt on a history position, pending id so the
+  coverflow lays out the step at once). Played cards picked in the coverflow step back the same way.
+- Layering: cover-art asks for the view cycle through scene/viewCycleRequest, Blueprint's cover reaches the
+  shared holder through page/sharedCover; clear glass goes through the SDK (fb.ui.setBlur) on the injected host.
+- The view's backdrop eases between the dark presets and Blueprint.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/app/ImmersivePage.tsx                     |  16 +-
+ src/immersive/cover-art/CoverArt.tsx          |   7 +-
+ src/immersive/coverflow/Coverflow.tsx         |  11 +-
+ src/immersive/coverflow/dropUpcoming.ts       |  39 +--
+ src/immersive/dial/DialCover.module.css       |   5 +
+ src/immersive/dial/DialCover.tsx              |  10 +-
+ src/immersive/dial/PaperDial.tsx              |  12 +-
+ src/immersive/dial/StageDial.tsx              |  15 +-
+ src/immersive/dial/recordGeometry.ts          |  69 +++++
+ src/immersive/page/CoverFlight.module.css     |  53 ++++
+ src/immersive/page/ImmersiveView.module.css   |   2 +
+ src/immersive/page/ImmersiveView.tsx          |   7 +
+ src/immersive/page/coverFlight.ts             | 274 ++++++++++++++++++
+ src/immersive/page/sharedCover.ts             |   6 +
+ src/immersive/page/viewCycle.ts               |  19 +-
+ src/immersive/paper/PaperScene.tsx            |  16 +-
+ src/immersive/playback-keys/Transport.tsx     |   3 +-
+ src/immersive/scene/coverflowAtoms.ts         |   7 +-
+ src/immersive/scene/coverflowItems.ts         |  42 ++-
+ src/immersive/scene/planRewind.ts             |  58 ++++
+ src/immersive/scene/shufflePlan.ts            |  49 +++-
+ src/immersive/scene/viewCycleRequest.ts       |  19 ++
+ src/theme/backdrop.ts                         |  29 +-
+ .../immersive/dial/recordGeometry.test.ts     |  50 ++++
+ .../immersive/scene/coverflowItems.test.ts    |  64 +++-
+ .../immersive/scene/shufflePlanOrder.test.ts  |  44 +++
+ 26 files changed, 833 insertions(+), 93 deletions(-)
+ create mode 100644 src/immersive/dial/recordGeometry.ts
+ create mode 100644 src/immersive/page/CoverFlight.module.css
+ create mode 100644 src/immersive/page/coverFlight.ts
+ create mode 100644 src/immersive/page/sharedCover.ts
+ create mode 100644 src/immersive/scene/planRewind.ts
+ create mode 100644 src/immersive/scene/viewCycleRequest.ts
+ create mode 100644 tests/unit/immersive/dial/recordGeometry.test.ts
+
+diff --git a/src/app/ImmersivePage.tsx b/src/app/ImmersivePage.tsx
+index ca246a0..d22e988 100644
+--- a/src/app/ImmersivePage.tsx
++++ b/src/app/ImmersivePage.tsx
+@@ -1,6 +1,6 @@
+ import { atom, type Atom } from 'jotai/vanilla';
+ import { useAtomValueRawSync, useStore } from 'jotai/react';
+-import { useContext, useEffect, useState } from 'react';
++import { useContext, useEffect, useMemo, useState } from 'react';
+ import { hostFullRatePcm, hostPcmSource } from '../immersive/analysis/hostPcmSource.ts';
+ import { startTrackAnalysis } from '../immersive/analysis/trackAnalysis.ts';
+ import { immersiveCoverKey, startImmersiveCover } from '../covers/immersiveCover.ts';
+@@ -24,6 +24,7 @@ import type { ImmersiveShell } from '../immersive/page/immersiveShell.ts';
+ import type { ViewServices } from '../immersive/page/viewServices.ts';
+ import { sceneTierAtom } from '../immersive/paper/sceneTier.ts';
+ import { spectrumStatusAtom, startSpectrumHistory } from '../immersive/spectrum/spectrumHistory.ts';
++import { previousSong } from '../immersive/scene/planRewind.ts';
+ import { startStereoSamples } from '../immersive/stereo/stereoSamples.ts';
+ import { startTerrainHistory } from '../immersive/terrain/terrainHistory.ts';
+ import { startCoverSource } from '../immersive/wash/coverSource.ts';
+@@ -100,7 +101,18 @@ export function ImmersivePage() {
+   const entry = useContext(PageEntryContext);
+   const current = useAtomValueRawSync(historyAtom).entry === entry;
+   const integration = useService(immersiveIntegrationKey);
+-  const playback = useService(playbackKey);
++  const host = useService(playbackKey);
++  // "previous" in the view starts a song over a few seconds in, and otherwise steps back along the order the
++  // coverflow shows (the shuffle plan's, in random order); see `previousSong`
++  const playback = useMemo<ViewServices['playback']>(
++    () => ({
++      playOrPause: () => host.playOrPause(),
++      next: () => host.next(),
++      seek: (seconds) => host.seek(seconds),
++      previous: () => previousSong(store, host),
++    }),
++    [store, host],
++  );
+   const artwork = useService(trackArtworkKey);
+   // 场景偏好在解析场景前同步加载至 store（单次幂等初始化）
+   initializeImmersivePrefs(store);
+diff --git a/src/immersive/cover-art/CoverArt.tsx b/src/immersive/cover-art/CoverArt.tsx
+index 74b695d..f0d227d 100644
+--- a/src/immersive/cover-art/CoverArt.tsx
++++ b/src/immersive/cover-art/CoverArt.tsx
+@@ -1,5 +1,5 @@
+ import { MusicNote224Regular } from '@fluentui/react-icons';
+-import { useAtomValueRawSync, useStore } from 'jotai/react';
++import { useAtomValueRawSync } from 'jotai/react';
+ import type { CSSProperties } from 'react';
+ import { immersiveCoverAtom, immersiveCoverKey } from '../../covers/immersiveCover.ts';
+ import type { ImmersiveCoverState } from '../../covers/immersiveCover.ts';
+@@ -9,7 +9,7 @@ import { SCENE_COVER_LAYER } from '../scene/coverHolders.ts';
+ import { useCoverHolder } from '../scene/useCoverHolder.ts';
+ import { SceneActionsContext } from '../scene/sceneContext.ts';
+ import { sceneStateAtom } from '../scene/sceneActions.ts';
+-import { cycleFromLyrics } from '../page/viewCycle.ts';
++import { requestViewCycle } from '../scene/viewCycleRequest.ts';
+ import { useContext } from 'react';
+ import styles from './CoverArt.module.css';
+ 
+@@ -37,7 +37,6 @@ export function CoverArt({ radius = 12, shadow = true }: CoverArtProps) {
+   const service = useLease(immersiveCoverKey);
+   const holder = useCoverHolder(SCENE_COVER_LAYER);
+   // one-tap view cycle: Lyrics → Blueprint
+-  const store = useStore();
+   const inPresets = useContext(SceneActionsContext) !== null;
+   const lyricsMode = useAtomValueRawSync(sceneStateAtom).mode === 'none';
+   const cycles = inPresets && lyricsMode;
+@@ -54,7 +53,7 @@ export function CoverArt({ radius = 12, shadow = true }: CoverArtProps) {
+       data-scene-element="cover"
+       data-shadow={shadow || undefined}
+       data-cycle={cycles ? '' : undefined}
+-      onClick={cycles ? () => cycleFromLyrics(store) : undefined}
++      onClick={cycles ? requestViewCycle : undefined}
+       style={{ '--cover-radius': `${radius}px` } as CSSProperties}
+       aria-hidden
+     >
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index 57d920e..73a06b0 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -19,6 +19,7 @@ import type { RowPoint } from '../../playback/queue/QueueRow.tsx';
+ import { queueKey } from '../../playback/queue/queueServices.ts';
+ import { upEarlierAtom, upNextAtom } from '../../playback/queue/upNext.ts';
+ import { activeShufflePlan } from '../scene/shufflePlan.ts';
++import { rewindTo } from '../scene/planRewind.ts';
+ import { createWheelStepper } from '../../playback/volume/wheelSteps.ts';
+ import { coverflowItemsAtom } from '../scene/coverflowAtoms.ts';
+ import { currentIndexOf, selectedIndexOf } from '../scene/coverflowItems.ts';
+@@ -165,6 +166,9 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     // shuffle plan may already have moved its cursor, so the old card order no longer tells
+     const items = store.get(coverflowItemsAtom);
+     picked.current = selectedNow() > currentIndexOf(items) ? 'right' : 'left';
++    // a played card with the shuffle plan running: the plan steps back to it, so what comes after it is
++    // again what the coverflow shows
++    if (item.kind === 'played' && (await rewindTo(store, item))) return;
+     // 起播成功后暂存选中状态，避免数据表尚未响应切歌前视心回弹至旧曲目位置；待数据表更新且该曲目转为当前曲目后，由联动副作用重置浏览状态；起播失败时保留选中位置
+     if (plan) await perform(plan);
+   };
+@@ -282,8 +286,11 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+       //  - the next song, or one picked on the right: the songs ahead only slide over, so they glide; the
+       //    side behind gains the song that just played, so it folds and fans out
+       //  - a song picked on the left (played before): both sides change, both fold
+-      // a song that just ran on by itself is the next one, so it came from the right
+-      const fromRight = (picked.current ?? 'right') === 'right';
++      // not picked here: a song that ran on by itself (the next one, from the right), or "previous" pressed
++      // anywhere in the view (the card that was left of the playing one)
++      const was = before.keys.indexOf(items[currentAt]?.key ?? '');
++      const side = picked.current ?? (was >= 0 && was < before.current ? 'left' : 'right');
++      const fromRight = side === 'right';
+       picked.current = null;
+       if (browsed !== null) sceneActions.browse(null);
+       prior.current = { keys, selected: currentAt, playing, current: currentAt };
+diff --git a/src/immersive/coverflow/dropUpcoming.ts b/src/immersive/coverflow/dropUpcoming.ts
+index a5f4912..d5fb828 100644
+--- a/src/immersive/coverflow/dropUpcoming.ts
++++ b/src/immersive/coverflow/dropUpcoming.ts
+@@ -3,7 +3,13 @@ import { settle } from '../../host/hostCall.ts';
+ import type { Store } from '../../kit/store.ts';
+ import { queueViewAtom } from '../../playback/queue/queueState.ts';
+ import type { CoverflowItem } from '../scene/coverflowItems.ts';
+-import { activeShufflePlan, shufflePlanAtom, type NewPlanEntry } from '../scene/shufflePlan.ts';
++import {
++  activeShufflePlan,
++  planEntryFor,
++  playingPosition,
++  shufflePlanAtom,
++  type NewPlanEntry,
++} from '../scene/shufflePlan.ts';
+ 
+ /**
+  * Whether dropping `dragged` into the gap before `items[gap]` changes anything: not next to where it is,
+@@ -58,24 +64,15 @@ async function dropPlayed(
+   const plan = store.get(shufflePlanAtom);
+   const service = activeShufflePlan();
+   if (plan && service) {
+-    const current = items[currentAt];
+-    // where the playing song sits in the plan: still its next song right after a song change, the one just
+-    // behind the cursor once the plan caught up, or nowhere (a detour), when the played side ends at the cursor
+-    const head = plan.order[plan.cursor];
+-    const last = plan.order[plan.cursor - 1];
++    const playing = items[currentAt]?.track?.handle;
++    const currentPosition = playingPosition(plan, playing);
+     const handleOf = (entry: (typeof plan.order)[number] | undefined) =>
+       entry === undefined
+         ? undefined
+         : entry.row !== null
+           ? plan.tracks.get(entry.row)?.handle
+           : entry.track.handle;
+-    const playing = current?.track?.handle;
+-    const currentPosition =
+-      playing !== undefined && handleOf(head) === playing
+-        ? plan.cursor
+-        : playing !== undefined && handleOf(last) === playing
+-          ? plan.cursor - 1
+-          : plan.cursor;
++    const head = plan.order[plan.cursor];
+     const left = items.slice(0, currentAt);
+     const firstOwn = left.findIndex(
+       (item) => item.kind === 'played' && item.position !== undefined,
+@@ -101,7 +98,7 @@ async function dropPlayed(
+       along = left
+         .slice(gap, ownStart)
+         .filter((item) => item !== dragged && item.track)
+-        .map((item) => ({ row: null, path: item.track!.path, track: item.track! }));
++        .map((item) => planEntryFor(plan, item.track!));
+     }
+ 
+     // the plan's next song sits in the queue; dragging that card is dragging the plan's first song
+@@ -127,14 +124,7 @@ async function dropPlayed(
+       (dragged.kind === 'earlier' || dragged.kind === 'upNext') && dragged.guid === plan.guid
+         ? dragged.row
+         : null;
+-    service.retire(
+-      {
+-        entry:
+-          row !== null ? { row } : { row: null, path: dragged.track.path, track: dragged.track },
+-      },
+-      at,
+-      along,
+-    );
++    service.retire({ entry: planEntryFor(plan, dragged.track, row) }, at, along);
+     return;
+   }
+ 
+@@ -225,10 +215,7 @@ async function dropUpcoming(
+         (dragged.kind === 'earlier' || dragged.kind === 'upNext') && dragged.guid === plan.guid
+           ? dragged.row
+           : null;
+-      service.insert(
+-        row !== null ? { row } : { row: null, path: dragged.track.path, track: dragged.track },
+-        planIndex,
+-      );
++      service.insert(planEntryFor(plan, dragged.track, row), planIndex);
+       return;
+     }
+   }
+diff --git a/src/immersive/dial/DialCover.module.css b/src/immersive/dial/DialCover.module.css
+index 5f729ae..3c52f9c 100644
+--- a/src/immersive/dial/DialCover.module.css
++++ b/src/immersive/dial/DialCover.module.css
+@@ -9,6 +9,11 @@
+   pointer-events: auto;
+ }
+ 
++/* the cover's copy is flying in (`page/coverFlight.ts`): the label shows once it lands */
++:global(html[data-cover-flight]) .cover {
++  visibility: hidden;
++}
++
+ .art {
+   position: absolute;
+   inset: 0;
+diff --git a/src/immersive/dial/DialCover.tsx b/src/immersive/dial/DialCover.tsx
+index dde0bbe..f160e68 100644
+--- a/src/immersive/dial/DialCover.tsx
++++ b/src/immersive/dial/DialCover.tsx
+@@ -1,14 +1,14 @@
+ import { Record48Regular } from '@fluentui/react-icons';
+ import { useAtomValueRawSync, useStore } from 'jotai/react';
+ import { atom } from 'jotai/vanilla';
+-import { useEffect, useRef, useState, type CSSProperties } from 'react';
++import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+ import { playbackAtom } from '../../playback/playback.ts';
+ import { immersiveCoverAtom } from '../../covers/immersiveCover.ts';
+ import { FadeImage } from '../../kit/FadeImage.tsx';
+ import { useViewServices } from '../page/viewServices.ts';
+ import { cycleFromBlueprint } from '../page/viewCycle.ts';
+-import { SCENE_COVER_LAYER } from '../scene/coverHolders.ts';
+-import { useCoverHolder } from '../scene/useCoverHolder.ts';
++import { coverFlight } from '../page/coverFlight.ts';
++import { SCENE_COVER_LAYER, useCoverHolder } from '../page/sharedCover.ts';
+ import styles from './DialCover.module.css';
+ 
+ export interface DialCoverProps {
+@@ -82,7 +82,9 @@ export function DialCover({ box, guard, round = false }: DialCoverProps) {
+   const { token } = cover;
+   const playing = useAtomValueRawSync(playingAtom);
+   const [spinner, setSpinner] = useState<HTMLDivElement | null>(null);
+-  useSpin(round ? spinner : null, round && playing);
++  // while the cover flies in (`coverFlight.ts`) the label waits at rest, then spins up as the copy lands on it
++  const flying = useSyncExternalStore(coverFlight.subscribe, coverFlight.active);
++  useSpin(round ? spinner : null, round && playing && !flying);
+   return (
+     <div
+       ref={holder}
+diff --git a/src/immersive/dial/PaperDial.tsx b/src/immersive/dial/PaperDial.tsx
+index 10bc27a..c9bf596 100644
+--- a/src/immersive/dial/PaperDial.tsx
++++ b/src/immersive/dial/PaperDial.tsx
+@@ -9,6 +9,7 @@ import { PaperBrackets } from './PaperBrackets.tsx';
+ import styles from './PaperDial.module.css';
+ import { VinylDisc } from './VinylDisc.tsx';
+ import { PaperTransport } from './PaperTransport.tsx';
++import { NARROW_COVER, sheetRecord } from './recordGeometry.ts';
+ 
+ /** 原尺寸下的环半径；圆心与封面边长同 `paperLayout.ts` 的 `DIAL_CENTER`、`COVER_SIZE` */
+ const RINGS: readonly number[] = [196, 236, 276];
+@@ -28,8 +29,8 @@ const TEXT_HALF_WIDTH = 210;
+ const TRANSPORT = { width: 240, height: 80 } as const;
+ /** narrow 档那一行：封面边长与顶边、封面与右侧文字列的间距、右侧三行各自的顶边 */
+ const NARROW = {
+-  cover: 160,
+-  top: 24,
++  cover: NARROW_COVER.size,
++  top: NARROW_COVER.top,
+   gap: 16,
+   albumTop: 44,
+   transportTop: 76,
+@@ -38,9 +39,6 @@ const NARROW = {
+ /** 四角括号在封面外扩 8 处，每个角的臂长 14（含线宽） */
+ const BRACKET_OUTSET = 8;
+ const BRACKET_ARM = 14;
+-/** The record in the dial, at the original size: disc diameter and label (cover) diameter */
+-const VINYL = 384;
+-const LABEL = 224;
+ 
+ interface Positioned {
+   readonly text: string;
+@@ -130,9 +128,7 @@ export function PaperDial({ dial, column }: PaperDialProps) {
+     size: size + 2 * BRACKET_OUTSET,
+   };
+   // with room for the dial, the cover becomes the label of a record; the narrow row keeps the square cover
+-  const record = dial
+-    ? { x: dial.x, y: dial.y, size: VINYL * dial.scale, label: LABEL * dial.scale }
+-    : null;
++  const record = dial ? sheetRecord(dial) : null;
+   const labelBox: CSSProperties | null = record
+     ? {
+         left: record.x - record.label / 2,
+diff --git a/src/immersive/dial/StageDial.tsx b/src/immersive/dial/StageDial.tsx
+index 0420383..cf0d8d0 100644
+--- a/src/immersive/dial/StageDial.tsx
++++ b/src/immersive/dial/StageDial.tsx
+@@ -2,23 +2,15 @@ import { useAtomValueRawSync } from 'jotai/react';
+ import type { CSSProperties } from 'react';
+ import { currentTrackAtom } from '../../playback/playback.ts';
+ import { MISSING, formatTagDate, formatTrackPosition } from '../paper/paperScale.ts';
+-import {
+-  STAGE_COVER,
+-  STAGE_TRANSPORT,
+-} from '../paper/paperStage.ts';
++import { STAGE_TRANSPORT } from '../paper/paperStage.ts';
+ import { trackExtrasAtom } from '../fields/trackExtras.ts';
+ import { DialCover } from './DialCover.tsx';
+ import { VinylDisc } from './VinylDisc.tsx';
++import { STAGE_RECORD } from './recordGeometry.ts';
+ import { PaperTransport } from './PaperTransport.tsx';
+ import styles from './StageDial.module.css';
+ 
+-/** The record on the stage: centred where the cover was, sized to clear the album name and the cells */
+-const RECORD = {
+-  x: STAGE_COVER.x + STAGE_COVER.size / 2,
+-  y: STAGE_COVER.y + STAGE_COVER.size / 2 + 4,
+-  size: 540,
+-  label: 320,
+-} as const;
++const RECORD = STAGE_RECORD;
+ const LABEL_BOX: CSSProperties = {
+   left: RECORD.x - RECORD.label / 2,
+   top: RECORD.y - RECORD.label / 2,
+@@ -26,7 +18,6 @@ const LABEL_BOX: CSSProperties = {
+   height: RECORD.label,
+ };
+ 
+-
+ const [FIRST_KEY, , LAST_KEY] = STAGE_TRANSPORT.centers;
+ const TRANSPORT_SIZE = {
+   side: STAGE_TRANSPORT.side,
+diff --git a/src/immersive/dial/recordGeometry.ts b/src/immersive/dial/recordGeometry.ts
+new file mode 100644
+index 0000000..059d816
+--- /dev/null
++++ b/src/immersive/dial/recordGeometry.ts
+@@ -0,0 +1,69 @@
++import { STAGE_COVER } from '../paper/paperStage.ts';
++import { paperGeometry, type DialPlacement } from '../paper/paperTiers.ts';
++
++/**
++ * Where Blueprint's record and its cover sit. The record components and the cover flight into Blueprint
++ * (`page/coverFlight.ts`) both read these, so the flight lands exactly on the label.
++ */
++
++/** The record on the stage (stage coordinates): centred where the cover was, sized to clear the album name and the cells */
++export const STAGE_RECORD = {
++  x: STAGE_COVER.x + STAGE_COVER.size / 2,
++  y: STAGE_COVER.y + STAGE_COVER.size / 2 + 4,
++  size: 540,
++  label: 320,
++} as const;
++
++/** The record in the dial of the smaller tiers, at the original size: disc diameter and label (cover) diameter */
++export const SHEET_VINYL = 384;
++export const SHEET_LABEL = 224;
++
++/** The narrow tier has no dial: a square cover at the top of the single column */
++export const NARROW_COVER = { size: 160, top: 24 } as const;
++
++/** The record of a tier with a dial, in sheet coordinates */
++export function sheetRecord(dial: DialPlacement): {
++  x: number;
++  y: number;
++  size: number;
++  label: number;
++} {
++  return { x: dial.x, y: dial.y, size: SHEET_VINYL * dial.scale, label: SHEET_LABEL * dial.scale };
++}
++
++export interface CoverBox {
++  readonly left: number;
++  readonly top: number;
++  readonly size: number;
++  /** The round label of the record; false for the narrow tier's square cover */
++  readonly round: boolean;
++}
++
++/** Where the cover sits in a Blueprint scene of `width` × `height`, relative to the scene's top left corner */
++export function paperCoverBox(width: number, height: number): CoverBox {
++  const geometry = paperGeometry(width, height);
++  const { origin, scale } = geometry;
++  if (geometry.tier === 'full') {
++    return {
++      left: origin.x + (STAGE_RECORD.x - STAGE_RECORD.label / 2) * scale,
++      top: origin.y + (STAGE_RECORD.y - STAGE_RECORD.label / 2) * scale,
++      size: STAGE_RECORD.label * scale,
++      round: true,
++    };
++  }
++  if (geometry.dial) {
++    const record = sheetRecord(geometry.dial);
++    return {
++      left: origin.x + record.x - record.label / 2,
++      top: origin.y + record.y - record.label / 2,
++      size: record.label,
++      round: true,
++    };
++  }
++  return {
++    left: origin.x + geometry.fields.x,
++    top: origin.y + NARROW_COVER.top,
++    size: NARROW_COVER.size,
++    round: false,
++  };
++}
+diff --git a/src/immersive/page/CoverFlight.module.css b/src/immersive/page/CoverFlight.module.css
+new file mode 100644
+index 0000000..66ac282
+--- /dev/null
++++ b/src/immersive/page/CoverFlight.module.css
+@@ -0,0 +1,53 @@
++/* The cover's copy flying into Blueprint (`coverFlight.ts`): above the scenes, never in the way of the pointer.
++   Only its transform and the two layers' opacity animate, so the compositor runs the whole flight. */
++.plane {
++  position: fixed;
++  left: 0;
++  top: 0;
++  z-index: 3;
++  transform-origin: 0 0;
++  pointer-events: none;
++  will-change: transform;
++}
++
++.square,
++.round {
++  position: absolute;
++  inset: 0;
++  overflow: hidden;
++  background: var(--colorNeutralBackground3);
++}
++
++.square {
++  box-shadow: 0 16px 48px var(--colorNeutralShadowKeyDarker);
++}
++
++/* the record's label, as `DialCover`'s round cover draws it */
++.round {
++  opacity: 0;
++  border-radius: 50%;
++  box-shadow:
++    0 0 0 calc(var(--ring, 1px) * 2) rgba(0, 0, 0, 0.55),
++    0 0 0 calc(var(--ring, 1px) * 3) rgba(255, 255, 255, 0.08);
++}
++
++.square img,
++.round img {
++  position: absolute;
++  inset: 0;
++  width: 100%;
++  height: 100%;
++  object-fit: cover;
++}
++
++.spindle {
++  position: absolute;
++  left: 50%;
++  top: 50%;
++  width: 4.5%;
++  height: 4.5%;
++  translate: -50% -50%;
++  border-radius: 50%;
++  background: radial-gradient(circle, #050506 0 45%, #2a2a2e 50% 70%, #0b0b0c 75%);
++  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
++}
+diff --git a/src/immersive/page/ImmersiveView.module.css b/src/immersive/page/ImmersiveView.module.css
+index 699a5f2..581c35d 100644
+--- a/src/immersive/page/ImmersiveView.module.css
++++ b/src/immersive/page/ImmersiveView.module.css
+@@ -7,6 +7,8 @@
+   background: var(--glass-view-bg, var(--colorNeutralBackground2));
+   color: var(--colorNeutralForeground1);
+   outline: none;
++  /* switching between the dark presets scene and Blueprint changes the shade underneath: ease it */
++  transition: background-color 380ms ease-out;
+ }
+ 
+ .view[data-idle] {
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index cfc8c30..5e0fc6a 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -25,6 +25,7 @@ import { PresetsScene } from './PresetsScene.tsx';
+ import styles from './ImmersiveView.module.css';
+ import { startShufflePlan } from '../scene/shufflePlan.ts';
+ import { cycleNext, isCycleTarget } from './viewCycle.ts';
++import { handleViewCycle } from '../scene/viewCycleRequest.ts';
+ 
+ export interface ImmersiveViewProps {
+   readonly shell: Pick<ImmersiveShell, 'touch' | 'toggleFullscreen' | 'leave'> | null;
+@@ -108,6 +109,12 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+     return attachImmersiveRoot(element);
+   }, [current]);
+ 
++  // a tap on the cover (Lyrics) moves on to the next view
++  useEffect(() => {
++    if (!current) return;
++    return handleViewCycle(() => cycleNext(store));
++  }, [current, store]);
++
+   // shuffle plan: deal the upcoming songs ahead while the view is up (random playback order only)
+   useEffect(() => {
+     if (!current) return;
+diff --git a/src/immersive/page/coverFlight.ts b/src/immersive/page/coverFlight.ts
+new file mode 100644
+index 0000000..372d910
+--- /dev/null
++++ b/src/immersive/page/coverFlight.ts
+@@ -0,0 +1,274 @@
++import { flushSync } from 'react-dom';
++import type { Store } from '../../kit/store.ts';
++import { immersiveCoverAtom } from '../../covers/immersiveCover.ts';
++import { reducedMotionAtom } from '../../motion/reducedMotion.ts';
++import { CURVE } from '../../motion/timing.ts';
++import { paperCoverBox } from '../dial/recordGeometry.ts';
++import { TRANSITION_ATTRIBUTE } from '../scene/sceneTransition.ts';
++import { sharedCoverHolders } from '../scene/coverHolders.ts';
++import styles from './CoverFlight.module.css';
++
++/**
++ * The cover's flight into Blueprint.
++ *
++ * Why not a view transition: the browser re-captures a named element's picture every frame it changes, and
++ * Blueprint's cover is a turning record label inside a scene that is still drawing itself in, so each frame of
++ * the glide waited on a fresh capture and the glide stuttered. Here the cover is a copy that only moves and
++ * fades (transform and opacity, which the compositor can run on its own), and the page does nothing heavy
++ * while it moves: Blueprint is mounted after the landing.
++ *
++ * The order of things:
++ *  1. a copy of the cover appears exactly over the cover on screen and starts flying to where Blueprint
++ *     will put its label (worked out from the window size, `paperCoverBox`, so the flight doesn't wait for
++ *     Blueprint to exist); the square copy turns round on the way by fading into a round one
++ *  2. the old scene fades out quickly under it; nothing else happens while the copy moves
++ *  3. once it has landed, Blueprint mounts (its label hidden under the copy) and fades in around it (if the
++ *     label turned out somewhere else, the copy slides onto it)
++ *  4. the label shows and the record spins up, the copy goes; the live panels (`paper/Deferred.tsx`) come in
++ *     one by one after that
++ */
++
++/** The flight itself */
++const FLIGHT_MS = 620;
++/** A soft start and a long, gentle landing */
++const FLIGHT_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
++/** The scene being left fades out this fast under the flying copy */
++const OUT_MS = 200;
++/** Blueprint fades in around the landed copy */
++const IN_MS = 360;
++/** Data attribute on the root while the copy is up: Blueprint's own label stays hidden under it */
++const FLIGHT_ATTRIBUTE = 'coverFlight';
++/** Landing never waits longer than this for the label's image */
++const IMAGE_WAIT_MS = 300;
++
++interface Rect {
++  readonly x: number;
++  readonly y: number;
++  readonly size: number;
++}
++
++let flying = false;
++const listeners = new Set<() => void>();
++
++function setFlying(next: boolean): void {
++  if (flying === next) return;
++  flying = next;
++  for (const listener of [...listeners]) listener();
++}
++
++/** Whether a cover is in flight; Blueprint's record waits for the landing before it turns */
++export const coverFlight = {
++  active: (): boolean => flying,
++  subscribe(listener: () => void): () => void {
++    listeners.add(listener);
++    return () => listeners.delete(listener);
++  },
++};
++
++/** The copy: a square layer that fades into a round one, at the larger of the two sizes so it stays sharp */
++function buildPlane(
++  url: string | null,
++  size: number,
++  radius: number,
++  ring: number,
++): {
++  plane: HTMLDivElement;
++  square: HTMLDivElement;
++  round: HTMLDivElement;
++} {
++  const plane = document.createElement('div');
++  plane.className = styles.plane ?? '';
++  plane.style.width = `${size}px`;
++  plane.style.height = `${size}px`;
++  plane.setAttribute('aria-hidden', 'true');
++  const layer = (className: string | undefined) => {
++    const element = document.createElement('div');
++    element.className = className ?? '';
++    if (url) {
++      const image = document.createElement('img');
++      image.decoding = 'sync';
++      image.alt = '';
++      image.draggable = false;
++      image.src = url;
++      element.append(image);
++    }
++    return element;
++  };
++  const square = layer(styles.square);
++  square.style.borderRadius = `${radius}px`;
++  const round = layer(styles.round);
++  round.style.setProperty('--ring', `${ring}px`);
++  const spindle = document.createElement('span');
++  spindle.className = styles.spindle ?? '';
++  round.append(spindle);
++  plane.append(square, round);
++  return { plane, square, round };
++}
++
++const pose = (rect: Rect, size: number): string =>
++  `translate(${rect.x}px, ${rect.y}px) scale(${rect.size / size})`;
++
++/**
++ * Fly the cover from where it is now into Blueprint, switching scenes with `update` on the way. Returns false
++ * (doing nothing) when there is no cover to fly or no motion wanted; the caller then switches the plain way.
++ */
++export function flyIntoBlueprint(store: Store, update: () => void): boolean {
++  const doc = document;
++  const root = doc.documentElement;
++  const content = doc.querySelector<HTMLElement>('[data-immersive-content]');
++  const source = sharedCoverHolders.holder();
++  if (
++    flying ||
++    !content ||
++    !(source instanceof HTMLElement) ||
++    store.get(reducedMotionAtom) ||
++    doc.visibilityState !== 'visible' ||
++    typeof content.animate !== 'function'
++  ) {
++    return false;
++  }
++  const area = content.getBoundingClientRect();
++  const start = source.getBoundingClientRect();
++  if (start.width < 1 || content.clientWidth < 1 || content.clientHeight < 1) return false;
++  // Blueprint lays itself out by the content's own size (a transform on the view, like its entrance zoom,
++  // doesn't change the tier); the result is then placed where the content shows on screen
++  const box = paperCoverBox(content.clientWidth, content.clientHeight);
++  const zoom = area.width / content.clientWidth;
++  let target: Rect = {
++    x: area.left + box.left * zoom,
++    y: area.top + box.top * zoom,
++    size: box.size * zoom,
++  };
++  const from: Rect = { x: start.left, y: start.top, size: start.width };
++
++  const cover = store.get(immersiveCoverAtom);
++  const url = cover.status === 'missing' ? null : cover.url;
++  const size = Math.max(from.size, target.size);
++  const radius =
++    (parseFloat(getComputedStyle(source).borderTopLeftRadius) || 0) * (size / from.size);
++  // the label's ring (2 px dark + 1 px light) as it will look once landed, drawn at the copy's own scale
++  const ring = size / target.size;
++  const { plane, square, round } = buildPlane(url, size, radius, ring);
++  if (!box.round) {
++    // the narrow tier keeps a square cover: the copy stays square, no record label look
++    round.style.borderRadius = `${radius}px`;
++    round.style.boxShadow = 'none';
++    round.querySelector('span')?.remove();
++  }
++  (content.parentElement ?? doc.body).append(plane);
++
++  setFlying(true);
++  root.dataset[FLIGHT_ATTRIBUTE] = '';
++  root.dataset[TRANSITION_ATTRIBUTE] = '';
++
++  const timing = { duration: FLIGHT_MS, easing: FLIGHT_EASING, fill: 'forwards' } as const;
++  const flight = plane.animate(
++    [{ transform: pose(from, size) }, { transform: pose(target, size) }],
++    timing,
++  );
++  // the corners round off in the middle of the flight
++  square.animate(
++    [{ opacity: 1 }, { opacity: 1, offset: 0.2 }, { opacity: 0, offset: 0.7 }, { opacity: 0 }],
++    { duration: FLIGHT_MS, fill: 'forwards' },
++  );
++  round.animate(
++    [{ opacity: 0 }, { opacity: 0, offset: 0.2 }, { opacity: 1, offset: 0.7 }, { opacity: 1 }],
++    { duration: FLIGHT_MS, fill: 'forwards' },
++  );
++
++  // the scene being left fades out under the copy
++  const leaving = content.querySelector<HTMLElement>('[data-scene]');
++  leaving?.animate([{ opacity: 1 }, { opacity: 0 }], {
++    duration: OUT_MS,
++    easing: CURVE.accelerateMid.timing,
++    fill: 'forwards',
++  });
++
++  // Nothing heavy happens while the cover moves: Blueprint mounts only once the copy has landed, so the
++  // flight never shares the main thread with the mount, whether or not the compositor runs it on its own
++  let done = false;
++  const finish = () => {
++    if (done) return;
++    done = true;
++    delete root.dataset[FLIGHT_ATTRIBUTE];
++    setFlying(false);
++    // the label shows again (and starts turning): take the copy away once the label's image is on screen,
++    // never in the same frame
++    const label = content.querySelector<HTMLElement>('[data-dial-cover] img');
++    const away = () => {
++      requestAnimationFrame(() => {
++        plane.remove();
++        delete root.dataset[TRANSITION_ATTRIBUTE];
++      });
++    };
++    if (
++      !(label instanceof HTMLImageElement) ||
++      (label.complete && !label.hasAttribute('data-loading'))
++    ) {
++      away();
++      return;
++    }
++    const limit = setTimeout(away, IMAGE_WAIT_MS);
++    label.addEventListener(
++      'load',
++      () => {
++        clearTimeout(limit);
++        away();
++      },
++      { once: true },
++    );
++  };
++
++  let arrived = false;
++  const arrive = () => {
++    if (arrived) return;
++    arrived = true;
++    try {
++      flushSync(update);
++    } catch {
++      update();
++    }
++    // Blueprint fades in around the landed copy once its first frame is on screen: started earlier, a
++    // heavy first paint would eat into the fade and it would pop in half done
++    const entering = content.querySelector<HTMLElement>('[data-scene]');
++    if (entering) entering.style.opacity = '0';
++    requestAnimationFrame(() =>
++      requestAnimationFrame(() => {
++        // worked out right, the label is exactly under the copy; if not, slide the copy onto it
++        const label = content
++          .querySelector<HTMLElement>('[data-dial-cover]')
++          ?.getBoundingClientRect();
++        if (label && label.width > 0) {
++          const real: Rect = { x: label.left, y: label.top, size: label.width };
++          const off = Math.max(
++            Math.abs(real.x - target.x),
++            Math.abs(real.y - target.y),
++            Math.abs(real.size - target.size),
++          );
++          if (off >= 1.5) {
++            plane.animate([{ transform: pose(target, size) }, { transform: pose(real, size) }], {
++              duration: 200,
++              easing: CURVE.decelerateMid.timing,
++              fill: 'forwards',
++            });
++            target = real;
++          }
++        }
++        if (!entering) return finish();
++        entering.style.opacity = '';
++        entering
++          .animate([{ opacity: 0 }, { opacity: 1 }], {
++            duration: IN_MS,
++            easing: CURVE.decelerateMid.timing,
++          })
++          .finished.then(finish, finish);
++      }),
++    );
++  };
++  flight.finished.then(arrive, arrive);
++  // never leave the copy behind, whatever happens to the page meanwhile
++  setTimeout(arrive, FLIGHT_MS + 400);
++  setTimeout(finish, FLIGHT_MS + IN_MS + 1500);
++
++  return true;
++}
+diff --git a/src/immersive/page/sharedCover.ts b/src/immersive/page/sharedCover.ts
+new file mode 100644
+index 0000000..96aa2b7
+--- /dev/null
++++ b/src/immersive/page/sharedCover.ts
+@@ -0,0 +1,6 @@
++/**
++ * The shared cover name for Blueprint's own cover. Blueprint's directories may not reach the new scene
++ * directories directly; the page hands the holder through.
++ */
++export { SCENE_COVER_LAYER } from '../scene/coverHolders.ts';
++export { useCoverHolder } from '../scene/useCoverHolder.ts';
+diff --git a/src/immersive/page/viewCycle.ts b/src/immersive/page/viewCycle.ts
+index d03b39f..172934c 100644
+--- a/src/immersive/page/viewCycle.ts
++++ b/src/immersive/page/viewCycle.ts
+@@ -6,6 +6,7 @@ import { GLIDE_MS, GLIDE_SPEED, TRANSITION_ATTRIBUTE } from '../scene/sceneTrans
+ import { browserSceneTransition, forceSceneMode, sceneStateAtom } from '../scene/sceneActions.ts';
+ import type { SceneMode } from '../scene/sceneState.ts';
+ import { chooseImmersiveScene, immersiveSceneAtom } from './immersivePrefs.ts';
++import { flyIntoBlueprint } from './coverFlight.ts';
+ 
+ /**
+  * One-tap view cycle: Blueprint → Coverflow → Lyrics → Blueprint.
+@@ -44,8 +45,14 @@ function morphSwap(store: Store, update: () => void): void {
+   const root = doc.documentElement;
+   root.style.setProperty('--scene-glide-duration', `${GLIDE_MS}ms`);
+   root.style.setProperty('--scene-glide-easing', CURVE.pointToPoint.timing);
+-  root.style.setProperty('--scene-fade-duration', `${Math.round(DURATION_MS.faster / GLIDE_SPEED)}ms`);
+-  root.style.setProperty('--scene-exit-duration', `${Math.round(DURATION_MS.fast / GLIDE_SPEED)}ms`);
++  root.style.setProperty(
++    '--scene-fade-duration',
++    `${Math.round(DURATION_MS.faster / GLIDE_SPEED)}ms`,
++  );
++  root.style.setProperty(
++    '--scene-exit-duration',
++    `${Math.round(DURATION_MS.fast / GLIDE_SPEED)}ms`,
++  );
+   root.dataset[TRANSITION_ATTRIBUTE] = '';
+   content.style.viewTransitionName = 'scene-body';
+   const done = () => {
+@@ -71,12 +78,14 @@ export function cycleFromBlueprint(store: Store): void {
+   });
+ }
+ 
+-/** Lyrics → Blueprint */
++/** Lyrics → Blueprint: the cover flies into the record's label (`coverFlight.ts`) */
+ export function cycleFromLyrics(store: Store): void {
+-  morphSwap(store, () => {
++  if (swapping) return;
++  const update = () => {
+     forceSceneMode(store, 'none');
+     chooseImmersiveScene(store, 'paper');
+-  });
++  };
++  if (!flyIntoBlueprint(store, update)) morphSwap(store, update);
+ }
+ 
+ /** Coverflow → Lyrics: stays in the presets scene, so it gets the scene's own glide (covers fly to place) */
+diff --git a/src/immersive/paper/PaperScene.tsx b/src/immersive/paper/PaperScene.tsx
+index 3df3a36..6a83a6c 100644
+--- a/src/immersive/paper/PaperScene.tsx
++++ b/src/immersive/paper/PaperScene.tsx
+@@ -12,6 +12,7 @@ import { paperGeometry } from './paperTiers.ts';
+ import styles from './PaperScene.module.css';
+ import { PaperSheet } from './PaperSheet.tsx';
+ import { PaperStage } from './PaperStage.tsx';
++import { Deferred } from './Deferred.tsx';
+ import { reportSceneTier } from './sceneTier.ts';
+ import { useSceneSize } from './useSceneSize.ts';
+ 
+@@ -51,8 +52,19 @@ export function PaperScene() {
+   useEffect(() => () => reportSceneTier(store, null), [store]);
+ 
+   return (
+-    <div ref={root} className={styles.paper} data-tier={tier} data-dark={dark || undefined}>
+-      {wash && <PaperCoverWash />}
++    <div
++      ref={root}
++      className={styles.paper}
++      data-scene="paper"
++      data-tier={tier}
++      data-dark={dark || undefined}
++    >
++      {/* the wash sets up a WebGL context: it comes in after the switch, with the live panels */}
++      {wash && (
++        <Deferred>
++          <PaperCoverWash />
++        </Deferred>
++      )}
+       {terrain && (
+         <TerrainCanvas
+           className={geometry.sunkTerrain ? styles.sunk : undefined}
+diff --git a/src/immersive/playback-keys/Transport.tsx b/src/immersive/playback-keys/Transport.tsx
+index f04048c..be547d8 100644
+--- a/src/immersive/playback-keys/Transport.tsx
++++ b/src/immersive/playback-keys/Transport.tsx
+@@ -17,6 +17,7 @@ import { playingAudibleAtom } from '../../playback/playingTrack.ts';
+ import { useViewControlStyles } from '../../theme/controlStyles.ts';
+ import { keyClass, useKeyStyles, type KeySize } from './keyStyles.ts';
+ import { SwapIcon } from './SwapIcon.tsx';
++import { previousSong } from '../scene/planRewind.ts';
+ import styles from './Transport.module.css';
+ 
+ export interface KeysProps {
+@@ -56,7 +57,7 @@ export function Transport({ size = 'regular' }: KeysProps) {
+         disabled={skipDisabled}
+         onClick={() => {
+           noteSkip(store, 'previous');
+-          void playback.previous();
++          void previousSong(store, playback);
+         }}
+       />
+       <Key
+diff --git a/src/immersive/scene/coverflowAtoms.ts b/src/immersive/scene/coverflowAtoms.ts
+index 6cab559..9781f9f 100644
+--- a/src/immersive/scene/coverflowAtoms.ts
++++ b/src/immersive/scene/coverflowAtoms.ts
+@@ -18,7 +18,12 @@ export const coverflowItemsAtom: Atom<CoverflowItem[]> = atom((get) =>
+     planned: (() => {
+       const plan = get(shufflePlanAtom);
+       return plan
+-        ? { guid: plan.guid, rows: get(plannedRowsAtom), history: get(planHistoryAtom) }
++        ? {
++            guid: plan.guid,
++            rows: get(plannedRowsAtom),
++            history: get(planHistoryAtom),
++            pending: plan.pending ?? null,
++          }
+         : null;
+     })(),
+   }),
+diff --git a/src/immersive/scene/coverflowItems.ts b/src/immersive/scene/coverflowItems.ts
+index 8a06310..cb9b0ac 100644
+--- a/src/immersive/scene/coverflowItems.ts
++++ b/src/immersive/scene/coverflowItems.ts
+@@ -88,10 +88,14 @@ export interface CoverflowSources {
+     /** The plan's songs before its cursor, newest first */
+     readonly history: readonly {
+       id: number;
++      /** Playlist row; null for a song the plan keeps by path */
++      row: number | null;
+       handle: string;
+       track: UpNextTrack;
+       position: number;
+     }[];
++    /** The entry id of a song just picked to play, until the plan has moved to it */
++    readonly pending?: number | null;
+   } | null;
+ }
+ 
+@@ -106,19 +110,24 @@ function planView(sources: CoverflowSources) {
+   const planned = !sources.upNext.list ? sources.planned : null;
+   if (!planned) return null;
+   const handle = sources.current?.handle;
++  const pending = planned.pending ?? null;
++  const isPending = (entry: { id: number; track: UpNextTrack }) =>
++    pending !== null && entry.id === pending && entry.track.handle === handle;
++  // the plan's next song, or one picked further on
+   const ahead =
+-    handle === undefined ? -1 : planned.rows.findIndex((row) => row.track.handle === handle);
++    handle === undefined
++      ? -1
++      : pending !== null && planned.rows.some(isPending)
++        ? planned.rows.findIndex(isPending)
++        : planned.rows[0]?.track.handle === handle
++          ? 0
++          : -1;
+   if (ahead >= 0) {
+     const picked = planned.rows[ahead];
+     const skipped = planned.rows
+       .slice(0, ahead)
+       .reverse()
+-      .map((row) => ({
+-        id: row.id,
+-        handle: row.track.handle,
+-        track: row.track,
+-        position: row.position,
+-      }));
++      .map((row) => ({ ...row, handle: row.track.handle }));
+     return {
+       currentKey: picked ? `plan:${picked.id}` : null,
+       upcoming: planned.rows.slice(ahead + 1),
+@@ -126,6 +135,25 @@ function planView(sources: CoverflowSources) {
+       played: [...skipped, ...planned.history],
+     };
+   }
++  // stepped back (previous, or a played card picked): the songs after it are coming up again
++  const back = planned.history.findIndex((entry, i) => i > 0 && isPending(entry));
++  if (back > 0) {
++    const picked = planned.history[back];
++    const again = planned.history
++      .slice(0, back)
++      .reverse()
++      .map((entry) => ({
++        id: entry.id,
++        row: entry.row,
++        track: entry.track,
++        position: entry.position,
++      }));
++    return {
++      currentKey: picked ? `plan:${picked.id}` : null,
++      upcoming: [...again, ...planned.rows],
++      played: planned.history.slice(back + 1),
++    };
++  }
+   const last = planned.history[0];
+   return {
+     currentKey: last && handle === last.handle ? `plan:${last.id}` : null,
+diff --git a/src/immersive/scene/planRewind.ts b/src/immersive/scene/planRewind.ts
+new file mode 100644
+index 0000000..9dd3eb7
+--- /dev/null
++++ b/src/immersive/scene/planRewind.ts
+@@ -0,0 +1,58 @@
++import type { Store } from '../../kit/store.ts';
++import { playbackAtom } from '../../playback/playback.ts';
++import { coverflowItemsAtom } from './coverflowAtoms.ts';
++import { currentIndexOf, type CoverflowItem } from './coverflowItems.ts';
++import {
++  activeShufflePlan,
++  planEntryFor,
++  playingPosition,
++  shufflePlanAtom,
++} from './shufflePlan.ts';
++
++/** Past this many seconds into a song, "previous" starts it over instead (like a phone) */
++export const RESTART_AFTER_SECONDS = 3;
++
++/**
++ * Play a song from the coverflow's played side the shuffle plan's way: the plan steps back to it, so the
++ * songs after it (the one that was playing included) come up again in the order the coverflow shows. A song
++ * of the playback history from before the plan is first put in just before the playing song, if it is a song
++ * of the plan's playlist. False when the plan can't take it; the caller then plays it the usual way.
++ */
++export async function rewindTo(store: Store, item: CoverflowItem): Promise<boolean> {
++  const service = activeShufflePlan();
++  const plan = store.get(shufflePlanAtom);
++  if (!service || !plan || item.kind !== 'played' || !item.track) return false;
++  if (item.position !== undefined) return service.playAt(item.position);
++  // a song from before the plan: only one of the plan's playlist can join it (the plan follows that
++  // playlist's playback); anything else plays the usual way
++  const entry = planEntryFor(plan, item.track);
++  if (entry.row === null) return false;
++  const items = store.get(coverflowItemsAtom);
++  const playing = items[currentIndexOf(items)]?.track?.handle;
++  const placed = service.retire({ entry }, playingPosition(plan, playing));
++  return placed === null ? false : service.playAt(placed);
++}
++
++export interface PreviousTarget {
++  previous(): Promise<void>;
++  seek(seconds: number): Promise<void>;
++}
++
++/**
++ * "Previous" everywhere in the immersive view: a few seconds into the song it starts the song over; otherwise
++ * it plays the card just left of the playing one in the coverflow, so stepping back follows the order shown
++ * there (random order included). Without the shuffle plan, foobar2000's own previous, which in list order is
++ * that same card.
++ */
++export async function previousSong(store: Store, playback: PreviousTarget): Promise<void> {
++  const { track, canSeek, position } = store.get(playbackAtom);
++  if (track && canSeek && position > RESTART_AFTER_SECONDS) {
++    await playback.seek(0);
++    return;
++  }
++  const items = store.get(coverflowItemsAtom);
++  const at = currentIndexOf(items);
++  const left = at > 0 ? items[at - 1] : undefined;
++  if (left && (await rewindTo(store, left))) return;
++  await playback.previous();
++}
+diff --git a/src/immersive/scene/shufflePlan.ts b/src/immersive/scene/shufflePlan.ts
+index afd372b..e1bf4e8 100644
+--- a/src/immersive/scene/shufflePlan.ts
++++ b/src/immersive/scene/shufflePlan.ts
+@@ -49,6 +49,11 @@ export interface ShufflePlan {
+   readonly cursor: number;
+   /** Metadata of the rows read so far, by row */
+   readonly tracks: ReadonlyMap<number, UpNextTrack>;
++  /**
++   * The song just picked to play (its entry id) until the plan has moved to it: the coverflow lays the cards
++   * out for it already, so it can tell a pick further on, or a step back, from the next song coming up
++   */
++  readonly pending?: number | null;
+ }
+ 
+ export interface PlannedRow {
+@@ -69,6 +74,8 @@ const trackAt = (plan: ShufflePlan, entry: PlanEntry | undefined): UpNextTrack |
+ /** A song before the plan's cursor: played, skipped over by a jump, or put among the played ones by hand */
+ export interface PlanPlayed {
+   readonly id: number;
++  /** Playlist row; null for a song the plan keeps by path */
++  readonly row: number | null;
+   readonly handle: string;
+   readonly track: UpNextTrack;
+   /** Position in the plan */
+@@ -87,7 +94,7 @@ export const planHistoryAtom: Atom<readonly PlanPlayed[]> = atom((get) => {
+     const entry = plan.order[position];
+     const track = trackAt(plan, entry);
+     if (!entry || !track) break;
+-    done.push({ id: entry.id, handle: track.handle, track, position });
++    done.push({ id: entry.id, row: entry.row, handle: track.handle, track, position });
+   }
+   return done;
+ });
+@@ -127,6 +134,8 @@ const keyOf = (entry: PlanEntry): string =>
+ export interface PlanChange {
+   readonly cursor: number;
+   shift(position: number): number;
++  /** Where the song that was moved or put in now sits */
++  readonly placed: number;
+ }
+ 
+ /**
+@@ -147,6 +156,7 @@ export function moveInPlan(
+   order.splice(to, 0, entry);
+   return {
+     cursor: from,
++    placed: to,
+     shift: (p) => {
+       if (p === position) return to;
+       const out = p > position ? p - 1 : p;
+@@ -185,6 +195,7 @@ export function retireInPlan(
+   order.splice(target, 0, ...added);
+   return {
+     cursor: next + added.length,
++    placed: target,
+     shift: (p) => {
+       if (p === removed) return target;
+       const out = removed >= 0 && p > removed ? p - 1 : p;
+@@ -193,6 +204,34 @@ export function retireInPlan(
+   };
+ }
+ 
++/**
++ * Where the playing song sits in the plan: still its next song right after a song change, the one just
++ * behind the cursor once the plan caught up, or nowhere (a detour), when songs put among the played ones go
++ * at the cursor
++ */
++export function playingPosition(plan: ShufflePlan, handle: string | undefined): number {
++  if (handle === undefined) return plan.cursor;
++  if (trackAt(plan, plan.order[plan.cursor])?.handle === handle) return plan.cursor;
++  if (trackAt(plan, plan.order[plan.cursor - 1])?.handle === handle) return plan.cursor - 1;
++  return plan.cursor;
++}
++
++/**
++ * How a song joins the plan: as its playlist row when it is a song of the plan's playlist (the plan follows
++ * that playlist's playback), by path otherwise
++ */
++export function planEntryFor(
++  plan: ShufflePlan,
++  track: UpNextTrack,
++  row: number | null = null,
++): NewPlanEntry {
++  if (row !== null) return { row };
++  for (const [index, known] of plan.tracks) {
++    if (known.handle === track.handle) return { row: index };
++  }
++  return { row: null, path: track.path, track };
++}
++
+ export interface ShufflePlanService {
+   /** Make sure metadata is in for the next `ahead` songs, dealing more of the deck when needed */
+   ensure(ahead: number): void;
+@@ -213,7 +252,7 @@ export interface ShufflePlanService {
+     source: { position: number } | { entry: NewPlanEntry },
+     at: number,
+     along?: readonly NewPlanEntry[],
+-  ): void;
++  ): number | null;
+   /** Put a song into the plan so it plays `index`-th from now (0 = next) */
+   insert(entry: NewPlanEntry, index: number): void;
+   dispose(): void;
+@@ -299,7 +338,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+         ? playing.playlistGuid === plan!.guid && playingRow === entry.row
+         : entry.track.handle === current.handle || entry.path === current.path);
+     if (jump && isPlaying(plan.order[jump.position])) {
+-      plan = { ...plan, cursor: jump.position + 1 };
++      plan = { ...plan, cursor: jump.position + 1, pending: null };
+       jump = null;
+     } else if (isPlaying(plan.order[plan.cursor])) {
+       plan = { ...plan, cursor: plan.cursor + 1 };
+@@ -428,6 +467,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+       const entry = plan?.order[position];
+       if (!plan || entry === undefined) return false;
+       jump = { position };
++      store.set(planAtom, { ...plan, pending: entry.id });
+       const answer =
+         entry.row !== null
+           ? await settle(() => fb.playlist.playTrack(plan.guid, entry.row))
+@@ -443,6 +483,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+       });
+     },
+     retire(source, at, along = []) {
++      let placed: number | null = null;
+       reorder((order, cursor) => {
+         const retired = retireInPlan(
+           order,
+@@ -453,8 +494,10 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+         );
+         if (!retired) return;
+         if (jump) jump = { position: retired.shift(jump.position) };
++        placed = retired.placed;
+         return retired.cursor;
+       });
++      return placed as number | null;
+     },
+     insert(entry, index) {
+       reorder((order, cursor) => {
+diff --git a/src/immersive/scene/viewCycleRequest.ts b/src/immersive/scene/viewCycleRequest.ts
+new file mode 100644
+index 0000000..6bf37bb
+--- /dev/null
++++ b/src/immersive/scene/viewCycleRequest.ts
+@@ -0,0 +1,19 @@
++/**
++ * A cover asks for the next immersive view (the one-tap view cycle) without knowing how views switch: the
++ * page registers the handler while it is up. Scene elements may only reach the shared directories, so the
++ * request goes through here.
++ */
++let handler: (() => void) | null = null;
++
++/** Called by the page; returns the unregister */
++export function handleViewCycle(next: () => void): () => void {
++  handler = next;
++  return () => {
++    if (handler === next) handler = null;
++  };
++}
++
++/** Move on to the next view, if a page is listening */
++export function requestViewCycle(): void {
++  handler?.();
++}
+diff --git a/src/theme/backdrop.ts b/src/theme/backdrop.ts
+index b559f24..5d81a39 100644
+--- a/src/theme/backdrop.ts
++++ b/src/theme/backdrop.ts
+@@ -32,7 +32,8 @@ export interface BackdropFace extends HostReadyFace {
+     event: 'window:backdropStateChanged',
+     handler: (payload: WindowBackdropStateChangedPayload) => void,
+   ): () => void;
+-  ui: Pick<typeof fb.ui, 'getCurrentWindowId' | 'setBackdropPolicy'>;
++  ui: Pick<typeof fb.ui, 'getCurrentWindowId' | 'setBackdropPolicy'> &
++    Partial<Pick<typeof fb.ui, 'setBlur' | 'setBackgroundTransparency'>>;
+ }
+ 
+ interface PlatformHints {
+@@ -210,8 +211,12 @@ export function startBackdrop(
+   let failureReceived = 0;
+   let sending = false;
+   let activeRevision: number | null = null;
+-  let queued: { choice: BackdropChoice; darkMode: boolean; clear: boolean; revision: number } | null =
+-    null;
++  let queued: {
++    choice: BackdropChoice;
++    darkMode: boolean;
++    clear: boolean;
++    revision: number;
++  } | null = null;
+   let failureTimer: ReturnType<typeof setTimeout> | undefined;
+   const waiter = waitForHost(host);
+ 
+@@ -247,7 +252,7 @@ export function startBackdrop(
+         }),
+       );
+       // effect "none" + blur-behind = DWM shows what is behind the window through transparent pixels
+-      await applyClearGlass(clear);
++      await applyClearGlass(host, clear);
+       if (disposed || mine !== revision) continue;
+       if (answer?.success) {
+         if (reports === previousReports)
+@@ -364,17 +369,13 @@ export function startBackdrop(
+   };
+ }
+ 
+-interface RawBridge {
+-  invoke(method: string, params?: Record<string, unknown>): Promise<unknown>;
+-}
+-
+-/** Blur-behind and a transparent WebView background are not wrapped by the SDK face; call the bridge directly */
+-async function applyClearGlass(on: boolean): Promise<void> {
+-  const bridge = (globalThis as { fb2k?: RawBridge }).fb2k;
+-  if (!bridge) return;
++/** Clear glass: blur what is behind the window and let the WebView background through */
++async function applyClearGlass(host: BackdropFace, on: boolean): Promise<void> {
++  const { ui } = host;
++  if (!ui.setBlur || !ui.setBackgroundTransparency) return;
+   try {
+-    await bridge.invoke('window.setBlur', { enabled: on });
+-    if (on) await bridge.invoke('window.setBackgroundTransparency', { transparent: true });
++    await ui.setBlur({ enabled: on });
++    if (on) await ui.setBackgroundTransparency({ transparent: true });
+   } catch {
+     // host refused: the window keeps its previous look
+   }
+diff --git a/tests/unit/immersive/dial/recordGeometry.test.ts b/tests/unit/immersive/dial/recordGeometry.test.ts
+new file mode 100644
+index 0000000..36a70a8
+--- /dev/null
++++ b/tests/unit/immersive/dial/recordGeometry.test.ts
+@@ -0,0 +1,50 @@
++import { describe, expect, it } from 'vitest';
++import {
++  NARROW_COVER,
++  SHEET_LABEL,
++  STAGE_RECORD,
++  paperCoverBox,
++} from '../../../../src/immersive/dial/recordGeometry.ts';
++import { paperGeometry } from '../../../../src/immersive/paper/paperTiers.ts';
++
++// where the cover flight into Blueprint lands: the label as StageDial / PaperDial place it
++
++describe('paperCoverBox', () => {
++  it('full tier: the record label on the scaled stage', () => {
++    const { tier, origin, scale } = paperGeometry(1280, 800);
++    expect(tier).toBe('full');
++    const box = paperCoverBox(1280, 800);
++    expect(box.round).toBe(true);
++    expect(box.size).toBeCloseTo(STAGE_RECORD.label * scale, 6);
++    expect(box.left).toBeCloseTo(origin.x + (STAGE_RECORD.x - STAGE_RECORD.label / 2) * scale, 6);
++    expect(box.top).toBeCloseTo(origin.y + (STAGE_RECORD.y - STAGE_RECORD.label / 2) * scale, 6);
++  });
++
++  it('a tier with a dial: the label centred on the dial, sized by its scale', () => {
++    for (const [width, height] of [
++      [1100, 700],
++      [800, 1200],
++    ] as const) {
++      const geometry = paperGeometry(width, height);
++      if (geometry.tier === 'full' || !geometry.dial) continue;
++      const box = paperCoverBox(width, height);
++      const label = SHEET_LABEL * geometry.dial.scale;
++      expect(box.round).toBe(true);
++      expect(box.size).toBeCloseTo(label, 6);
++      expect(box.left + box.size / 2).toBeCloseTo(geometry.origin.x + geometry.dial.x, 6);
++      expect(box.top + box.size / 2).toBeCloseTo(geometry.origin.y + geometry.dial.y, 6);
++    }
++  });
++
++  it('narrow tier: the square cover at the top of the column', () => {
++    for (let width = 400; width <= 1400; width += 20) {
++      const geometry = paperGeometry(width, 500);
++      if (geometry.dial) continue;
++      const box = paperCoverBox(width, 500);
++      expect(box.round).toBe(false);
++      expect(box.size).toBe(NARROW_COVER.size);
++      expect(box.left).toBe(geometry.origin.x + geometry.fields.x);
++      return;
++    }
++  });
++});
+diff --git a/tests/unit/immersive/scene/coverflowItems.test.ts b/tests/unit/immersive/scene/coverflowItems.test.ts
+index a63b64e..7142dfe 100644
+--- a/tests/unit/immersive/scene/coverflowItems.test.ts
++++ b/tests/unit/immersive/scene/coverflowItems.test.ts
+@@ -291,7 +291,9 @@ describe('coverflowItems: a song picked further on in the shuffle plan', () => {
+       planned: {
+         guid: 'g',
+         rows,
+-        history: [{ id: 1, handle: track('now').handle, track: track('now'), position: 19 }],
++        history: [
++          { id: 1, row: null, handle: track('now').handle, track: track('now'), position: 19 },
++        ],
+       },
+     }),
+   );
+@@ -305,7 +307,10 @@ describe('coverflowItems: a song picked further on in the shuffle plan', () => {
+         planned: {
+           guid: 'g',
+           rows,
+-          history: [{ id: 1, handle: track('now').handle, track: track('now'), position: 19 }],
++          history: [
++            { id: 1, row: null, handle: track('now').handle, track: track('now'), position: 19 },
++          ],
++          pending: 53,
+         },
+       }),
+     );
+@@ -322,3 +327,58 @@ describe('coverflowItems: a song picked further on in the shuffle plan', () => {
+     expect(before.map((item) => item.key)).toContain('plan:54');
+   });
+ });
++
++describe('coverflowItems: stepping back in the shuffle plan', () => {
++  const entry = (name: string, id: number, position: number) => ({
++    id,
++    row: null,
++    handle: track(name).handle,
++    track: track(name),
++    position,
++  });
++  const planRow = (name: string, i: number) => ({
++    id: 50 + i,
++    row: i,
++    track: track(name),
++    position: 20 + i,
++  });
++  // played p2 p1, playing now (history newest first: now, p1, p2), next n1 n2
++  const history = [entry('now', 3, 19), entry('p1', 2, 18), entry('p2', 1, 17)];
++  const rows = [planRow('n1', 0), planRow('n2', 1)];
++
++  it('previous: the playing card moves one to the right, the cards keep their keys', () => {
++    const before = coverflowItems(
++      sources({ current: track('now'), planned: { guid: 'g', rows, history } }),
++    );
++    expect(before.map((item) => item.key)).toEqual([
++      'plan:1',
++      'plan:2',
++      'plan:3',
++      'plan:50',
++      'plan:51',
++    ]);
++    expect(currentIndexOf(before)).toBe(2);
++    const after = coverflowItems(
++      sources({ current: track('p1'), planned: { guid: 'g', rows, history, pending: 2 } }),
++    );
++    expect(after.map((item) => item.key)).toEqual([
++      'plan:1',
++      'plan:2',
++      'plan:3',
++      'plan:50',
++      'plan:51',
++    ]);
++    expect(currentIndexOf(after)).toBe(1);
++    const next = after[2];
++    expect(next?.kind === 'planned' && next.position).toBe(19);
++  });
++
++  it('the same song coming up again later is not mistaken for the one picked', () => {
++    const again = [planRow('n1', 0), { id: 60, row: 9, track: track('p1'), position: 22 }];
++    const after = coverflowItems(
++      sources({ current: track('p1'), planned: { guid: 'g', rows: again, history, pending: 2 } }),
++    );
++    expect(after[currentIndexOf(after)]?.key).toBe('plan:2');
++    expect(after.map((item) => item.key)).toContain('plan:60');
++  });
++});
+diff --git a/tests/unit/immersive/scene/shufflePlanOrder.test.ts b/tests/unit/immersive/scene/shufflePlanOrder.test.ts
+index f207dd0..6535988 100644
+--- a/tests/unit/immersive/scene/shufflePlanOrder.test.ts
++++ b/tests/unit/immersive/scene/shufflePlanOrder.test.ts
+@@ -1,5 +1,7 @@
+ import { describe, expect, it } from 'vitest';
+ import {
++  planEntryFor,
++  playingPosition,
+   moveInPlan,
+   retireInPlan,
+   type PlanEntry,
+@@ -83,3 +85,45 @@ describe('moveInPlan', () => {
+     expect(change?.cursor).toBe(4);
+   });
+ });
++
++describe('where things land', () => {
++  it('retireInPlan says where the song now sits', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = retireInPlan(order, 4, { position: 6 }, 3);
++    expect(order[change!.placed]?.row).toBe(6);
++  });
++
++  it('moveInPlan says where the song now sits', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = moveInPlan(order, 4, 1, 1);
++    expect(order[change!.placed]?.row).toBe(1);
++  });
++});
++
++describe('planEntryFor / playingPosition', () => {
++  const song = (name: string) => ({ handle: `h-${name}`, path: `p-${name}` }) as never;
++  const plan = {
++    guid: 'g',
++    count: 5,
++    order: deck(0, 1, 2, 3, 4),
++    cursor: 3,
++    tracks: new Map([
++      [0, song('a')],
++      [1, song('b')],
++      [2, song('c')],
++      [3, song('d')],
++    ]),
++  };
++
++  it('a song of the playlist joins by row, anything else by path', () => {
++    expect(planEntryFor(plan, song('b'))).toEqual({ row: 1 });
++    expect(planEntryFor(plan, song('x'))).toMatchObject({ row: null, path: 'p-x' });
++    expect(planEntryFor(plan, song('x'), 4)).toEqual({ row: 4 });
++  });
++
++  it('the playing song: just behind the cursor, still the next one, or a detour', () => {
++    expect(playingPosition(plan, 'h-c')).toBe(2);
++    expect(playingPosition(plan, 'h-d')).toBe(3);
++    expect(playingPosition(plan, 'h-x')).toBe(3);
++  });
++});
+-- 
+2.43.0
+

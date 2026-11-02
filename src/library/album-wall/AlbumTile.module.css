@@ -1,0 +1,17 @@
+/* 图块在行层中绝对定位，位置通过 transform 计算；边长与字行距由网格通过 CSS 变量继承（封面与文字样式见 cover-tile）
+   横向由行偏移与列距合成，纵向映射行高；列数不变时微调宽度不触发组件重新渲染 */
+.tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate(
+    round(calc(var(--row-offset) + var(--tile-column) * var(--tile-pitch)), 1px),
+    var(--tile-y)
+  );
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalXXS);
+  width: var(--tile-size);
+  cursor: default;
+  user-select: none;
+}

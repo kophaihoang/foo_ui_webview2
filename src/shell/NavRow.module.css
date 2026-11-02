@@ -1,0 +1,54 @@
+/* 按钮固定在卡片上方，组与组之间的空白允许操作下方页面 */
+.root {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacingHorizontalS);
+  height: 36px;
+  min-width: 0;
+  padding: var(--spacingVerticalM) var(--spacingHorizontalXXL) 0;
+  pointer-events: none;
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS);
+}
+
+/* 高 36、圆角 18，描边画在盒子里面，键离描边内侧四周都是 2、彼此隔 2：两个 40 的键，整条 88 宽；后退前进
+   之间多一道 1 宽的竖线，那一条 91 宽。 */
+.capsule {
+  box-sizing: border-box;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacingHorizontalXXS);
+  height: 36px;
+  padding: var(--spacingVerticalXXS) var(--spacingHorizontalXXS);
+  border: var(--strokeWidthThin) solid transparent;
+  border-radius: var(--borderRadiusCircular);
+  background: var(--bg-player-overlay);
+  backdrop-filter: var(--capsule-filter);
+  box-shadow: var(--shadow4);
+  pointer-events: auto;
+}
+
+/* 侧边栏键：36 × 36 的描边圆，键离描边内侧四周 2 */
+.ring {
+  box-sizing: border-box;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: var(--strokeWidthThin) solid transparent;
+  border-radius: var(--borderRadiusCircular);
+  background: var(--bg-player-overlay);
+  backdrop-filter: var(--capsule-filter);
+  box-shadow: var(--shadow4);
+  pointer-events: auto;
+}

@@ -1,0 +1,170 @@
+// 构建发行版分发工件集并完成双向签名校验（仅输出至本地目录，不执行上传）
+//
+// 契约说明：
+// 1. 打包顺序：先打包前端资产（不含 installed.json），将资产哈希注入 release.json；
+//    随后将 release.json 的哈希注入首装包 installed.json，杜绝哈希循环依赖
+// 2. 验签闭环：签名私钥必须对应内置受信任公钥，产出工件通过客户端校验逻辑完成回读核验
+//
+// 用法：node scripts/release/build-release.mjs --out <目录> --key <keyId>=<私钥路径> [--key …]
+//   [--previous <上一份 manifest.json>] [--upgrade-from >=X.Y.Z] [--skip-build]
+//   [--runtime <runtime.json> --ncm <ncm.json> --lx <lxserver.json>]  带后端时三项都要给
+
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { parseArgs } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { LOADER_VERSION } from '../../src/boot/loader.ts';
+import {
+  changelogJson,
+  parseChangelogSource,
+  releaseNotes,
+} from '../../src/update/changelogSource.ts';
+import { BUILT_IN_KEYS } from '../../src/update/contract.ts';
+import { INITIAL_TRUST, acceptRoot } from '../../src/update/rootTrust.ts';
+import { verifyArtifacts } from './artifacts.mjs';
+import { candidateOf, downloadUrl, nextRootPayload, releaseManifest } from './manifests.mjs';
+import { checkVectors, publicSpki, signEnvelope } from './signing.mjs';
+import { zipForRelease } from './zip.mjs';
+import { backendArtifacts } from './backend-artifacts.mjs';
+
+const root = new URL('../..', import.meta.url);
+const { values } = parseArgs({
+  options: {
+    out: { type: 'string' },
+    key: { type: 'string', multiple: true },
+    previous: { type: 'string' },
+    'upgrade-from': { type: 'string', default: '>=0.1.0' },
+    'skip-build': { type: 'boolean', default: false },
+    dist: { type: 'string', default: 'dist' },
+    runtime: { type: 'string' },
+    ncm: { type: 'string' },
+    lx: { type: 'string' },
+  },
+});
+if (!values.out || !values.key?.length) throw new Error('需要 --out 与至少一个 --key');
+const withBackend = [values.runtime, values.ncm, values.lx];
+if (withBackend.some(Boolean) && !withBackend.every(Boolean))
+  throw new Error('--runtime、--ncm 与 --lx 要一起给：带后端的发行都要登记网易云与 lxserver 组件');
+
+/** @type {{ version: string, hostRequirements: { foo_ui_webview2: string } }} */
+const metadata = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+const version = metadata.version;
+const plugin = metadata.hostRequirements.foo_ui_webview2.replace(/^>=/, '');
+const sha256 = (/** @type {Uint8Array} */ bytes) =>
+  createHash('sha256').update(bytes).digest('hex');
+
+await checkVectors();
+const signers = values.key.map((entry) => {
+  const [keyId = '', path = ''] = entry.split(/=(.*)/s);
+  const privateKeyPem = readFileSync(path, 'utf8');
+  const builtIn = BUILT_IN_KEYS.find((key) => key.keyId === keyId);
+  if (!builtIn || builtIn.spki !== publicSpki(privateKeyPem))
+    throw new Error(`签名钥 ${keyId} 不是主题内置的公钥，客户端验不过`);
+  return { keyId, privateKeyPem };
+});
+
+const changelog = parseChangelogSource(readFileSync(new URL('CHANGELOG.md', root), 'utf8'));
+const releaseEntry = changelog.find((item) => item.version === version);
+if (!releaseEntry) throw new Error(`CHANGELOG.md 里没有 ${version} 的条目`);
+const changelogText = changelogJson(changelog, version);
+
+if (!values['skip-build']) {
+  const build = spawnSync('npm run build', { cwd: root, stdio: 'inherit', shell: true });
+  if (build.status !== 0) throw new Error('构建失败');
+}
+const dist = new URL(`${values.dist}/`, root);
+const frontend = new URL(`fe/${version}/`, dist);
+const backend =
+  values.runtime && values.ncm && values.lx
+    ? await backendArtifacts(
+        version,
+        values.runtime,
+        fileURLToPath(new URL(`be/${version}/`, dist)),
+        { ncm: values.ncm, lxserver: values.lx },
+      )
+    : null;
+if (backend) writeFileSync(new URL('backend.json', frontend), backend.text);
+else if (existsSync(new URL('backend.json', frontend)))
+  throw new Error('前端目录已有后端描述，需要提供对应 --runtime 或重新构建');
+/** @param {URL} base @param {string} [prefix] @returns {{ path: string, bytes: Uint8Array }[]} */
+function collect(base, prefix = '') {
+  return readdirSync(new URL(prefix || '.', base), { withFileTypes: true }).flatMap((entry) => {
+    const path = `${prefix}${entry.name}`;
+    if (entry.isDirectory()) return collect(base, `${path}/`);
+    return entry.isFile() ? [{ path, bytes: readFileSync(new URL(path, base)) }] : [];
+  });
+}
+const files = collect(frontend).filter((file) => file.path !== 'installed.json');
+if (!files.some((file) => file.path === 'index.html')) throw new Error('前端目录缺 index.html');
+const bundled = files.find((file) => file.path === 'changelog.json');
+if (!bundled || new TextDecoder().decode(bundled.bytes) !== changelogText)
+  throw new Error('前端目录里的 changelog.json 与 CHANGELOG.md 不符，需要重新构建');
+
+const zip = await zipForRelease(files);
+const release = releaseManifest({
+  version,
+  upgradeFrom: values['upgrade-from'],
+  plugin,
+  loader: LOADER_VERSION,
+  notes: releaseNotes(releaseEntry),
+  zip: { size: zip.length, sha256: sha256(zip) },
+  ...(backend ? { backend: backend.manifest } : {}),
+});
+const releaseText = JSON.stringify(release, null, 2) + '\n';
+const releaseSha256 = sha256(Buffer.from(releaseText, 'utf8'));
+const candidate = candidateOf(release, releaseSha256);
+
+const marker = {
+  schema: 1,
+  version,
+  files: Object.fromEntries(files.map((file) => [file.path, sha256(file.bytes)])),
+  releaseSha256,
+};
+writeFileSync(new URL('installed.json', frontend), JSON.stringify(marker) + '\n');
+const firstInstall = await zipForRelease(
+  collect(dist).filter(
+    (file) =>
+      file.path === 'index.html' ||
+      file.path === 'current.json' ||
+      file.path.startsWith(`fe/${version}/`),
+  ),
+);
+
+const previousText = values.previous ? readFileSync(values.previous, 'utf8') : null;
+let previousPayload = null;
+if (previousText !== null) {
+  const decision = await acceptRoot(INITIAL_TRUST, previousText, BUILT_IN_KEYS);
+  if (decision.kind !== 'accepted') throw new Error(`上一份根清单没有通过验签：${decision.kind}`);
+  previousPayload = JSON.parse(previousText).payload;
+}
+const changelogBytes = Buffer.from(changelogText, 'utf8');
+const manifest = await signEnvelope(
+  nextRootPayload(previousPayload, candidate, {
+    url: downloadUrl(version, 'changelog.json'),
+    size: changelogBytes.length,
+    sha256: sha256(changelogBytes),
+  }),
+  signers,
+);
+
+const out = join(values.out, `v${version}`);
+if (existsSync(out)) throw new Error(`${out} 已存在，附件发出去就不能再改，换个目录`);
+mkdirSync(out, { recursive: true });
+writeFileSync(join(out, 'release.json'), releaseText);
+writeFileSync(join(out, `fe-${version}.zip`), zip);
+if (backend) writeFileSync(join(out, backend.name), backend.bytes);
+writeFileSync(join(out, `foo-webview-default-theme-${version}.zip`), firstInstall);
+writeFileSync(join(out, 'manifest.json'), manifest);
+writeFileSync(join(out, 'changelog.json'), changelogBytes);
+// 回读本地工件并调用客户端校验管道执行一致性验收
+const verified = await verifyArtifacts(out);
+console.log(
+  JSON.stringify({
+    version,
+    serial: verified.serial,
+    releaseSha256,
+    out: relative(process.cwd(), out),
+  }),
+);

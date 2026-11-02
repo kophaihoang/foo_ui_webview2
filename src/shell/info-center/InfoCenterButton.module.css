@@ -1,0 +1,68 @@
+.root {
+  display: inline-flex;
+  align-self: center;
+  position: relative;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* 图标与圆点同处一个 16 px 的框里，圆点的位置不受按键内边距影响。 */
+.glyph {
+  position: relative;
+  display: inline-flex;
+}
+
+.dot {
+  position: absolute;
+  top: -2px;
+  left: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--borderRadiusCircular);
+}
+
+.danger {
+  background-color: var(--colorStatusDangerForeground1);
+}
+
+.accent {
+  background-color: var(--colorBrandForeground1);
+}
+
+.warning {
+  background-color: var(--colorStatusWarningForeground1);
+}
+
+/* 强制颜色下背景会被系统换成底色，圆点改用系统文字色才看得见。 */
+@media (forced-colors: active) {
+  .dot {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--fontSizeBase400);
+  line-height: var(--lineHeightBase400);
+  font-weight: var(--fontWeightSemibold);
+}
+
+.message {
+  padding-top: var(--spacingVerticalM);
+  padding-bottom: var(--spacingVerticalM);
+  border-bottom: var(--strokeWidthThin) solid var(--line);
+}
+
+.detail {
+  margin-top: var(--spacingVerticalXS);
+  margin-bottom: var(--spacingVerticalS);
+  color: var(--colorNeutralForeground2);
+  overflow-wrap: anywhere;
+  font-size: var(--fontSizeBase200);
+  line-height: var(--lineHeightBase200);
+}
+
+.error {
+  color: var(--colorStatusDangerForeground1);
+}

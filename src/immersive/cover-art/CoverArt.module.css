@@ -1,0 +1,49 @@
+/* 元素填满外框给的方形。圆角裁住换图时的擦除遮罩，投影画在外框外侧；占位是中性底加居中的音符。
+   投影的颜色取外框的 `--scene-shadow`，没有就用 Fluent 的阴影色。 */
+.cover {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--cover-radius);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+}
+
+.cover[data-cycle] {
+  cursor: pointer;
+  transition: transform var(--motion-faster) var(--curveEasyEase);
+}
+
+.cover[data-cycle]:hover {
+  transform: scale(1.015);
+}
+
+.cover[data-cycle]:active {
+  transform: scale(0.985);
+}
+
+.cover[data-shadow] {
+  box-shadow: 0 16px 48px var(--scene-shadow, var(--colorNeutralShadowKeyDarker));
+}
+
+.layers {
+  width: 100%;
+  height: 100%;
+}
+
+.placeholder {
+  width: 30%;
+  height: 30%;
+  animation: placeholder-in var(--motion-faster) var(--curveLinear);
+}
+
+@keyframes placeholder-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* a copy of the cover is flying in (`page/coverFlight.ts`): this one shows once it has landed */
+:global(html[data-cover-flight]) .cover {
+  visibility: hidden;
+}

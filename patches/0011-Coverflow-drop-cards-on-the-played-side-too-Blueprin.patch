@@ -1,0 +1,997 @@
+From 183465344b69fd0684f2b14db0d187b8688bbfec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 02:49:18 +0000
+Subject: [PATCH 11/16] Coverflow: drop cards on the played side too; Blueprint
+ panels come in after the switch; spectrum feed reopens
+
+- Played side: in random order a song dropped there leaves the shuffle plan's upcoming songs and sits where
+  dropped; in list order the playlist row really moves. Played songs can be reordered or dragged back right.
+- Blueprint: spectrum, waveform, meters, stereo and lyrics mount after the view transition, one per frame,
+  fading in.
+- Spectrum: reopen the feed when it goes silent or unavailable while music plays.
+- Engine entrance tests follow the emerge-from-behind entrance.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/Coverflow.tsx         |   9 +-
+ src/immersive/coverflow/dropUpcoming.ts       | 157 +++++++++++++++++-
+ src/immersive/paper/Deferred.tsx              | 102 +++++++++++-
+ src/immersive/paper/PaperSheet.tsx            |  18 +-
+ src/immersive/paper/PaperStage.tsx            |  16 +-
+ src/immersive/scene/coverflowItems.ts         |  34 ++--
+ src/immersive/scene/shufflePlan.ts            | 142 ++++++++++++++--
+ src/immersive/spectrum/spectrumHistory.ts     |  28 ++++
+ tests/unit/immersive/coverflow/engine.test.ts |  51 +++---
+ .../immersive/scene/coverflowItems.test.ts    |  24 +++
+ .../immersive/scene/shufflePlanOrder.test.ts  |  80 +++++++++
+ 11 files changed, 580 insertions(+), 81 deletions(-)
+ create mode 100644 tests/unit/immersive/scene/shufflePlanOrder.test.ts
+
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index 351da06..dcfd244 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -27,7 +27,7 @@ import { sceneStateAtom } from '../scene/sceneActions.ts';
+ import { useSceneActions, useSceneFrame } from '../scene/sceneContext.ts';
+ import { useCoverHolder } from '../scene/useCoverHolder.ts';
+ import styles from './Coverflow.module.css';
+-import { dropUpcoming } from './dropUpcoming.ts';
++import { canDrop, dropSong } from './dropUpcoming.ts';
+ import { CoverflowCard, coverRequestSizes } from './CoverflowCard.tsx';
+ import { CoverflowMenu } from './CoverflowMenu.tsx';
+ import { createCoverflowEngine, type EngineCard, type EngineClock } from './engine.ts';
+@@ -343,7 +343,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     for (const [key, card] of elements.current) if (card === element) return key;
+     return null;
+   };
+-  /** The gap the pointer is over, right of the playing song only, and where to draw the marker */
++  /** The gap the pointer is over, on either side of the playing song, and where to draw the marker */
+   const gapAt = (x: number, skip: string): Pick<DragView, 'bar'> & { gap: number | null } => {
+     const box = root.current?.getBoundingClientRect();
+     const list = store.get(coverflowItemsAtom);
+@@ -357,7 +357,8 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     const centerOf = (rect: DOMRect) => rect.left + rect.width / 2;
+     const after = cards.find((card) => x < centerOf(card.rect));
+     const gap = after ? after.index : list.length;
+-    if (!box || gap <= at) return { gap: null, bar: null };
++    const dragged = list.find((item) => item.key === skip);
++    if (!box || at < 0 || !dragged || !canDrop(store, list, dragged, gap)) return { gap: null, bar: null };
+     const before = [...cards].reverse().find((card) => card.index < gap);
+     const playing = elements.current.get(list[at]?.key ?? '')?.getBoundingClientRect();
+     const barX =
+@@ -396,7 +397,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     setTimeout(() => (justDragged.current = false), 0);
+     const list = store.get(coverflowItemsAtom);
+     const item = list.find((entry) => entry.key === state.key);
+-    if (drop && item && state.gap !== null) void dropUpcoming(store, list, item, state.gap);
++    if (drop && item && state.gap !== null) void dropSong(store, list, item, state.gap);
+   };
+   // near an edge the covers scroll on by themselves, so a song can travel far
+   useEffect(() => {
+diff --git a/src/immersive/coverflow/dropUpcoming.ts b/src/immersive/coverflow/dropUpcoming.ts
+index fc0a513..b9e48cf 100644
+--- a/src/immersive/coverflow/dropUpcoming.ts
++++ b/src/immersive/coverflow/dropUpcoming.ts
+@@ -3,18 +3,159 @@ import { settle } from '../../host/hostCall.ts';
+ import type { Store } from '../../kit/store.ts';
+ import { queueViewAtom } from '../../playback/queue/queueState.ts';
+ import type { CoverflowItem } from '../scene/coverflowItems.ts';
+-import { activeShufflePlan, shufflePlanAtom } from '../scene/shufflePlan.ts';
++import { activeShufflePlan, shufflePlanAtom, type NewPlanEntry } from '../scene/shufflePlan.ts';
+ 
+ /**
+- * "Pick up a song": a card dragged in the coverflow and dropped right of the playing song plays at the spot
+- * it was dropped. `items` is the coverflow's list; the drop lands in the gap just before `items[gap]`
++ * Whether dropping `dragged` into the gap before `items[gap]` changes anything: not next to where it is,
++ * not the playing song, and on the played side only where that side can be rearranged (the shuffle plan's
++ * side, or the playlist's own rows when playing in list order)
++ */
++export function canDrop(
++  store: Store,
++  items: readonly CoverflowItem[],
++  dragged: CoverflowItem,
++  gap: number,
++): boolean {
++  const currentAt = items.findIndex((item) => item.kind === 'current');
++  if (currentAt < 0 || dragged.kind === 'current' || !dragged.track) return false;
++  const from = items.indexOf(dragged);
++  if (from === gap || from === gap - 1) return false;
++  if (gap > currentAt) return true;
++  if (store.get(shufflePlanAtom) && activeShufflePlan()) return true;
++  // list order: only rows of the playing playlist move, and the played side has to be that playlist's rows
++  return (
++    (dragged.kind === 'earlier' || dragged.kind === 'upNext') &&
++    items.slice(0, currentAt).every((item) => item.kind === 'earlier')
++  );
++}
++
++/**
++ * "Pick up a song", on either side of the playing song. Dropped on the played side (left), the song counts as
++ * played: in random order it leaves the shuffle plan's upcoming songs and sits among the played ones where it
++ * was dropped; in list order the playlist itself is rearranged, so the song really moves to that row.
++ * Dropped on the upcoming side, see `dropUpcoming`.
++ */
++export async function dropSong(
++  store: Store,
++  items: readonly CoverflowItem[],
++  dragged: CoverflowItem,
++  gap: number,
++): Promise<void> {
++  if (!canDrop(store, items, dragged, gap)) return;
++  const currentAt = items.findIndex((item) => item.kind === 'current');
++  if (gap > currentAt) return dropUpcoming(store, items, dragged, gap);
++  return dropPlayed(store, items, dragged, gap, currentAt);
++}
++
++async function dropPlayed(
++  store: Store,
++  items: readonly CoverflowItem[],
++  dragged: CoverflowItem,
++  gap: number,
++  currentAt: number,
++): Promise<void> {
++  if (!dragged.track) return;
++  const plan = store.get(shufflePlanAtom);
++  const service = activeShufflePlan();
++  if (plan && service) {
++    const current = items[currentAt];
++    // where the playing song sits in the plan: still its next song right after a song change, the one just
++    // behind the cursor once the plan caught up, or nowhere (a detour), when the played side ends at the cursor
++    const head = plan.order[plan.cursor];
++    const last = plan.order[plan.cursor - 1];
++    const handleOf = (entry: (typeof plan.order)[number] | undefined) =>
++      entry === undefined
++        ? undefined
++        : entry.row !== null
++          ? plan.tracks.get(entry.row)?.handle
++          : entry.track.handle;
++    const playing = current?.track?.handle;
++    const currentPosition =
++      playing !== undefined && handleOf(head) === playing
++        ? plan.cursor
++        : playing !== undefined && handleOf(last) === playing
++          ? plan.cursor - 1
++          : plan.cursor;
++    const left = items.slice(0, currentAt);
++    const firstOwn = left.findIndex((item) => item.kind === 'played' && item.position !== undefined);
++    const ownStart = firstOwn < 0 ? left.length : firstOwn;
++    const firstOwnPosition = (() => {
++      const item = left[ownStart];
++      return item?.kind === 'played' && item.position !== undefined ? item.position : currentPosition;
++    })();
++    const target = items[gap];
++    let at: number;
++    let along: NewPlanEntry[] = [];
++    if (target?.kind === 'played' && target.position !== undefined) {
++      at = target.position;
++    } else if (gap >= ownStart) {
++      at = currentPosition;
++    } else {
++      // dropped among the older history: the songs between here and the plan's own join the plan behind it,
++      // so everything shows in the order it was left in
++      at = firstOwnPosition;
++      along = left
++        .slice(gap, ownStart)
++        .filter((item) => item !== dragged && item.track)
++        .map((item) => ({ row: null, path: item.track!.path, track: item.track! }));
++    }
++
++    // the plan's next song sits in the queue; dragging that card is dragging the plan's first song
++    const headHandle = handleOf(head);
++    const position =
++      dragged.kind === 'planned'
++        ? dragged.position
++        : dragged.kind === 'played' && dragged.position !== undefined
++          ? dragged.position
++          : dragged.kind === 'queued' && dragged.track.handle === headHandle
++            ? plan.cursor
++            : null;
++    if (position !== null) {
++      service.retire({ position }, at, along);
++      return;
++    }
++    if (dragged.kind === 'queued') {
++      const entries = store.get(queueViewAtom).entries;
++      const index = entries.findIndex((entry) => entry.key === dragged.entry);
++      if (index >= 0) await settle(() => fb.queue.remove(index));
++    }
++    const row =
++      (dragged.kind === 'earlier' || dragged.kind === 'upNext') && dragged.guid === plan.guid
++        ? dragged.row
++        : null;
++    service.retire(
++      { entry: row !== null ? { row } : { row: null, path: dragged.track.path, track: dragged.track } },
++      at,
++      along,
++    );
++    return;
++  }
++
++  // list order: move the row in the playlist itself, in front of the row it was dropped before
++  if (dragged.kind !== 'earlier' && dragged.kind !== 'upNext') return;
++  const target = items[gap];
++  let before: number;
++  if (target?.kind === 'earlier') {
++    before = target.row;
++  } else {
++    const at = await settle(() => fb.player.getCurrentTrackIndex());
++    if (!at?.success || !at.found || at.index === null) return;
++    before = at.index;
++  }
++  const delta = before > dragged.row ? before - dragged.row - 1 : before - dragged.row;
++  if (delta === 0) return;
++  await settle(() => fb.playlist.moveTracks(dragged.guid, [dragged.row], delta));
++}
++
++/**
++ * The upcoming side: a card dropped right of the playing song plays at the spot it was dropped. `items` is the coverflow's list; the drop lands in the gap just before `items[gap]`
+  * (`gap === items.length` is the very end). Only gaps right of the playing song count.
+  *
+  * With the shuffle plan running, songs ahead of the plan are reordered in the plan itself and the queue
+  * follows. Without it (list order), the queue is the only thing that can be reordered: the song goes into the
+  * queue, at the drop spot or at the queue's end when dropped among the playlist's own songs.
+  */
+-export async function dropUpcoming(
++async function dropUpcoming(
+   store: Store,
+   items: readonly CoverflowItem[],
+   dragged: CoverflowItem,
+@@ -54,15 +195,17 @@ export async function dropUpcoming(
+         : planHead.row !== null
+           ? plan.tracks.get(planHead.row)?.handle
+           : planHead.track.handle;
++    // a song of the plan moves: an upcoming one, or one from the played side (it leaves that side)
+     const position =
+-      dragged.kind === 'planned'
+-        ? dragged.position
++      dragged.kind === 'planned' || (dragged.kind === 'played' && dragged.position !== undefined)
++        ? (dragged.position ?? null)
+         : dragged.kind === 'queued' && dragged.track.handle === headHandle
+           ? plan.cursor
+           : null;
+     if (position !== null) {
+       const target = planIndex ?? 0;
+-      service.move(position, position - plan.cursor < target ? target - 1 : target);
++      const ahead = position - plan.cursor;
++      service.move(position, ahead >= 0 && ahead < target ? target - 1 : target);
+       return;
+     }
+     if (planIndex !== null) {
+diff --git a/src/immersive/paper/Deferred.tsx b/src/immersive/paper/Deferred.tsx
+index 498af44..f0e0c53 100644
+--- a/src/immersive/paper/Deferred.tsx
++++ b/src/immersive/paper/Deferred.tsx
+@@ -1,15 +1,99 @@
+-import { useEffect, useState, type ReactNode } from 'react';
++import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
++import { useAtomValueRawSync } from 'jotai/react';
++import { reducedMotionAtom } from '../../motion/reducedMotion.ts';
++import { CURVE } from '../../motion/timing.ts';
+ 
+ /**
+- * Mounts its children a moment after it mounts itself. Switching to Blueprint glides the cover across in a
+- * view transition; the heavy live panels (spectrum, waveform) start once the glide is done, so the switch
+- * doesn't stall on them.
++ * Switching to Blueprint glides the cover across in a view transition. The browser holds the old picture
++ * until the new scene has rendered, so everything mounted in that moment makes the switch stall. The light
++ * parts (dial, record, titles) come with the glide; the live panels wrapped in this one (spectrum, waveform,
++ * meters, stereo, lyrics) wait until the transition is over, then come in one per frame and fade in.
+  */
+-export function Deferred({ delay = 560, children }: { delay?: number; children: ReactNode }) {
++
++/** `data-scene-transition` on the root while a scene transition runs (`TRANSITION_ATTRIBUTE`) */
++const TRANSITION_DATA = 'data-scene-transition';
++/** Never wait longer than this for a transition to end */
++const WAIT_LIMIT_MS = 1500;
++const FADE_MS = 280;
++
++const waiting: (() => void)[] = [];
++let pumping = false;
++
++/** Mount the waiting panels one per frame, so they don't land in the same frame either */
++function pump(): void {
++  if (pumping) return;
++  pumping = true;
++  const tick = () => {
++    const next = waiting.shift();
++    if (!next) {
++      pumping = false;
++      return;
++    }
++    next();
++    requestAnimationFrame(() => requestAnimationFrame(tick));
++  };
++  requestAnimationFrame(tick);
++}
++
++/** Call `then` once no scene transition is running; returns a cancel */
++function whenSettled(then: () => void): () => void {
++  const root = document.documentElement;
++  let done = false;
++  const finish = () => {
++    if (done) return;
++    done = true;
++    observer.disconnect();
++    clearTimeout(limit);
++    then();
++  };
++  const observer = new MutationObserver(() => {
++    if (!root.hasAttribute(TRANSITION_DATA)) finish();
++  });
++  const limit = setTimeout(finish, WAIT_LIMIT_MS);
++  if (!root.hasAttribute(TRANSITION_DATA)) {
++    // no transition (first open, reduced motion): still let the scene paint once before the panels
++    requestAnimationFrame(finish);
++  } else {
++    observer.observe(root, { attributes: true, attributeFilter: [TRANSITION_DATA] });
++  }
++  return () => {
++    done = true;
++    observer.disconnect();
++    clearTimeout(limit);
++  };
++}
++
++export function Deferred({ children }: { children: ReactNode }) {
+   const [ready, setReady] = useState(false);
++  const reduced = useAtomValueRawSync(reducedMotionAtom);
++  const marker = useRef<HTMLTemplateElement>(null);
+   useEffect(() => {
+-    const timer = setTimeout(() => setReady(true), delay);
+-    return () => clearTimeout(timer);
+-  }, [delay]);
+-  return ready ? children : null;
++    let live = true;
++    const cancel = whenSettled(() => {
++      waiting.push(() => {
++        if (live) setReady(true);
++      });
++      pump();
++    });
++    return () => {
++      live = false;
++      cancel();
++    };
++  }, []);
++  // fade the panel's own box in: the element rendered just before the marker
++  useLayoutEffect(() => {
++    if (!ready || reduced) return;
++    const panel = marker.current?.previousElementSibling;
++    if (!(panel instanceof HTMLElement) || typeof panel.animate !== 'function') return;
++    panel.animate([{ opacity: 0 }, { opacity: 1 }], {
++      duration: FADE_MS,
++      easing: CURVE.decelerateMid.timing,
++    });
++  }, [ready, reduced]);
++  return ready ? (
++    <>
++      {children}
++      <template ref={marker} />
++    </>
++  ) : null;
+ }
+diff --git a/src/immersive/paper/PaperSheet.tsx b/src/immersive/paper/PaperSheet.tsx
+index 94872f2..f7cc7e6 100644
+--- a/src/immersive/paper/PaperSheet.tsx
++++ b/src/immersive/paper/PaperSheet.tsx
+@@ -34,7 +34,11 @@ export function PaperSheet({ geometry }: PaperSheetProps) {
+         placement={fields}
+         height={sheet.height - fields.y}
+         slots={{
+-          stereo: <PaperStereo />,
++          stereo: (
++            <Deferred>
++              <PaperStereo />
++            </Deferred>
++          ),
+           spectrum: (
+             <Deferred>
+               <PaperSpectrum />
+@@ -45,8 +49,16 @@ export function PaperSheet({ geometry }: PaperSheetProps) {
+               <PaperWaveform />
+             </Deferred>
+           ),
+-          gauges: <PaperGauges />,
+-          lyrics: <LyricLog />,
++          gauges: (
++            <Deferred>
++              <PaperGauges />
++            </Deferred>
++          ),
++          lyrics: (
++            <Deferred>
++              <LyricLog />
++            </Deferred>
++          ),
+         }}
+       />
+     </div>
+diff --git a/src/immersive/paper/PaperStage.tsx b/src/immersive/paper/PaperStage.tsx
+index d2d62db..a78c1be 100644
+--- a/src/immersive/paper/PaperStage.tsx
++++ b/src/immersive/paper/PaperStage.tsx
+@@ -40,7 +40,13 @@ export function PaperStage({ scale, origin }: PaperStageProps) {
+       <div className={styles.stage} style={frame} data-paper-content>
+         <PaperMarks crosses={STAGE_CROSSES} pad={STAGE_PAD} />
+         <StageDial />
+-        <StageFields stereo={<StageStereo />} />
++        <StageFields
++          stereo={
++            <Deferred>
++              <StageStereo />
++            </Deferred>
++          }
++        />
+         <div className={`${styles.slot} ${styles.spectrum}`}>
+           <Deferred>
+             <PaperSpectrum />
+@@ -52,12 +58,16 @@ export function PaperStage({ scale, origin }: PaperStageProps) {
+           </Deferred>
+         </div>
+         <div className={`${styles.slot} ${styles.gauges}`}>
+-          <PaperGauges />
++          <Deferred>
++            <PaperGauges />
++          </Deferred>
+         </div>
+         <div className={`${styles.slot} ${styles['file-info']}`}>
+           <PaperFileInfo />
+         </div>
+-        <LyricCard />
++        <Deferred>
++          <LyricCard />
++        </Deferred>
+       </div>
+     </StageScaleContext>
+   );
+diff --git a/src/immersive/scene/coverflowItems.ts b/src/immersive/scene/coverflowItems.ts
+index 6d34da8..6758642 100644
+--- a/src/immersive/scene/coverflowItems.ts
++++ b/src/immersive/scene/coverflowItems.ts
+@@ -18,6 +18,8 @@ interface ItemBase {
+ export interface PlayedItem extends ItemBase {
+   readonly kind: 'played';
+   readonly track: UpNextTrack;
++  /** Position in the shuffle plan, for a song the plan has behind its cursor; absent for the playback history */
++  readonly position?: number;
+ }
+ 
+ /** 正在播放的列表里排在它前面的曲目（队列页「之前的曲目」），按来源列表的顺序，起播从这一行往下接着播 */
+@@ -88,8 +90,8 @@ export interface CoverflowSources {
+       track: UpNextTrack;
+       position: number;
+     }[];
+-    /** Songs the plan played last, newest first */
+-    readonly history: readonly { id: number; handle: string }[];
++    /** The plan's songs before its cursor, newest first */
++    readonly history: readonly { id: number; handle: string; track: UpNextTrack; position: number }[];
+   } | null;
+ }
+ 
+@@ -157,18 +159,26 @@ export function coverflowItems(sources: CoverflowSources): CoverflowItem[] {
+       });
+     }
+   } else {
+-    // with the shuffle plan running, the songs it played keep the card they had on the right, so a song
+-    // change slides the whole row by one instead of swapping cards
++    // with the shuffle plan running, the played side ends with the plan's own songs before its cursor: they
++    // keep the card they had on the right (a song change slides the row by one instead of swapping cards),
++    // and songs put there by hand show where they were dropped. The playback history fills in before them,
++    // minus the songs the plan already shows
+     const history = planView(sources)?.played ?? [];
+-    const keys = new Map<number, string>();
+-    for (let i = sources.review.length - 1, j = 0; i >= 0 && j < history.length; i--, j++) {
+-      const entry = history[j];
+-      if (!entry || sources.review[i]?.track.handle !== entry.handle) break;
+-      keys.set(i, `plan:${entry.id}`);
+-    }
+-    sources.review.forEach((row, i) => {
+-      items.push({ key: keys.get(i) ?? `played:${row.key}`, kind: 'played', track: row.track });
++    const shown = new Set(history.map((entry) => entry.handle));
++    sources.review.forEach((row) => {
++      if (shown.has(row.track.handle)) return;
++      items.push({ key: `played:${row.key}`, kind: 'played', track: row.track });
+     });
++    for (let i = history.length - 1; i >= 0; i--) {
++      const entry = history[i];
++      if (!entry) continue;
++      items.push({
++        key: `plan:${entry.id}`,
++        kind: 'played',
++        track: entry.track,
++        position: entry.position,
++      });
++    }
+   }
+   // 正在播放的是列表里的一行时，它的行号就是前面有几首（之前的曲目的总数），键与它做「接下来」时的键相同
+   const key =
+diff --git a/src/immersive/scene/shufflePlan.ts b/src/immersive/scene/shufflePlan.ts
+index 4cbf8be..2ead355 100644
+--- a/src/immersive/scene/shufflePlan.ts
++++ b/src/immersive/scene/shufflePlan.ts
+@@ -62,16 +62,28 @@ export const shufflePlanAtom: Atom<ShufflePlan | null> = atom((get) => get(planA
+ const trackAt = (plan: ShufflePlan, entry: PlanEntry | undefined): UpNextTrack | undefined =>
+   entry === undefined ? undefined : entry.row !== null ? plan.tracks.get(entry.row) : entry.track;
+ 
+-/** The last songs the plan played, newest first, so the coverflow can keep their cards as they move left */
+-export const planHistoryAtom: Atom<readonly { id: number; handle: string }[]> = atom((get) => {
++/** A song before the plan's cursor: played, skipped over by a jump, or put among the played ones by hand */
++export interface PlanPlayed {
++  readonly id: number;
++  readonly handle: string;
++  readonly track: UpNextTrack;
++  /** Position in the plan */
++  readonly position: number;
++}
++
++/** How many songs before the cursor the coverflow shows at most */
++const HISTORY_SHOWN = 200;
++
++/** The songs before the plan's cursor, newest first, so the coverflow can keep their cards as they move left */
++export const planHistoryAtom: Atom<readonly PlanPlayed[]> = atom((get) => {
+   const plan = get(planAtom);
+   if (!plan) return [];
+-  const done: { id: number; handle: string }[] = [];
+-  for (let position = plan.cursor - 1; position >= 0 && done.length < 12; position--) {
++  const done: PlanPlayed[] = [];
++  for (let position = plan.cursor - 1; position >= 0 && done.length < HISTORY_SHOWN; position--) {
+     const entry = plan.order[position];
+     const track = trackAt(plan, entry);
+     if (!entry || !track) break;
+-    done.push({ id: entry.id, handle: track.handle });
++    done.push({ id: entry.id, handle: track.handle, track, position });
+   }
+   return done;
+ });
+@@ -107,13 +119,93 @@ function deal(count: number, avoidFirst: readonly PlanEntry[]): PlanEntry[] {
+ const keyOf = (entry: PlanEntry): string =>
+   entry.row !== null ? `row:${entry.row}` : `path:${entry.path}`;
+ 
++/** What a change to the order did: the new cursor, and where a song that was at `position` is now */
++export interface PlanChange {
++  readonly cursor: number;
++  shift(position: number): number;
++}
++
++/**
++ * Move the song at `position` (in `order`, changed in place) so it plays `index`-th after the cursor.
++ * A song from before the cursor leaves the played side, so the cursor steps back by one
++ */
++export function moveInPlan(
++  order: PlanEntry[],
++  cursor: number,
++  position: number,
++  index: number,
++): PlanChange | null {
++  if (position < 0 || position >= order.length) return null;
++  const [entry] = order.splice(position, 1);
++  if (entry === undefined) return null;
++  const from = position < cursor ? cursor - 1 : cursor;
++  const to = Math.min(order.length, from + Math.max(0, index));
++  order.splice(to, 0, entry);
++  return {
++    cursor: from,
++    shift: (p) => {
++      if (p === position) return to;
++      const out = p > position ? p - 1 : p;
++      return out >= to ? out + 1 : out;
++    },
++  };
++}
++
++/**
++ * Put a song among the played ones in front of position `at` (`order` changes in place): a song of the plan
++ * by position, or a new entry, followed by `along`. They all end up before the cursor
++ */
++export function retireInPlan(
++  order: PlanEntry[],
++  cursor: number,
++  source: { readonly position: number } | { readonly entry: PlanEntry },
++  at: number,
++  along: readonly PlanEntry[] = [],
++): PlanChange | null {
++  let target = at;
++  let next = cursor;
++  let entry: PlanEntry | undefined;
++  let removed = -1;
++  if ('position' in source) {
++    removed = source.position;
++    if (removed < 0 || removed >= order.length) return null;
++    [entry] = order.splice(removed, 1);
++    if (removed < next) next -= 1;
++    if (removed < target) target -= 1;
++  } else {
++    entry = source.entry;
++  }
++  if (entry === undefined) return null;
++  const added = [entry, ...along];
++  target = Math.max(0, Math.min(target, next));
++  order.splice(target, 0, ...added);
++  return {
++    cursor: next + added.length,
++    shift: (p) => {
++      if (p === removed) return target;
++      const out = removed >= 0 && p > removed ? p - 1 : p;
++      return out >= target ? out + added.length : out;
++    },
++  };
++}
++
+ export interface ShufflePlanService {
+   /** Make sure metadata is in for the next `ahead` songs, dealing more of the deck when needed */
+   ensure(ahead: number): void;
+   /** Play the planned song at `position`; the plan jumps there and the queue follows */
+   playAt(position: number): Promise<boolean>;
+-  /** Move the planned song at `position` so it plays `index`-th from now (0 = next) */
++  /**
++   * Move the song at `position` so it plays `index`-th from now (0 = next). A song from before the cursor
++   * (one shown on the played side) leaves that side
++   */
+   move(position: number, index: number): void;
++  /**
++   * Put a song among the played ones, in front of the song at `at` (a position before the cursor, or the
++   * playing song's): it counts as played and won't come up in this deal. `source` is a song of the plan by
++   * position (an upcoming one, or one on the played side being reordered) or a new one. `along` follow it
++   * in, in order: songs of the playback history that sat between the drop spot and the plan's own
++   */
++  retire(source: { position: number } | { entry: NewPlanEntry }, at: number, along?: readonly NewPlanEntry[]): void;
+   /** Put a song into the plan so it plays `index`-th from now (0 = next) */
+   insert(entry: NewPlanEntry, index: number): void;
+   dispose(): void;
+@@ -289,16 +381,20 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     readTracks(missing);
+   }
+ 
+-  /** Change the order, then let the queue follow (its next song may have changed) */
+-  function reorder(change: (order: PlanEntry[], cursor: number) => void): void {
++  /**
++   * Change the order, then let the queue follow (its next song may have changed). `change` returns the new
++   * cursor when songs went in or out before it
++   */
++  function reorder(change: (order: PlanEntry[], cursor: number) => number | void): void {
+     const plan = store.get(planAtom);
+     if (!plan) return;
+     const order = [...plan.order];
+-    change(order, plan.cursor);
+-    store.set(planAtom, { ...plan, order });
++    const cursor = change(order, plan.cursor) ?? plan.cursor;
++    store.set(planAtom, { ...plan, order, cursor });
+     void sync();
+   }
+ 
++
+   // track change and queue change arrive as separate events: let both land before looking
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const later = () => {
+@@ -331,15 +427,31 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     },
+     move(position, index) {
+       reorder((order, cursor) => {
+-        if (position < cursor || position >= order.length) return;
+-        const [entry] = order.splice(position, 1);
+-        if (entry === undefined) return;
+-        order.splice(Math.min(order.length, cursor + Math.max(0, index)), 0, entry);
++        const moved = moveInPlan(order, cursor, position, index);
++        if (!moved) return;
++        if (jump) jump = { position: moved.shift(jump.position) };
++        return moved.cursor;
++      });
++    },
++    retire(source, at, along = []) {
++      reorder((order, cursor) => {
++        const retired = retireInPlan(
++          order,
++          cursor,
++          'position' in source ? source : { entry: withId(source.entry) },
++          at,
++          along.map(withId),
++        );
++        if (!retired) return;
++        if (jump) jump = { position: retired.shift(jump.position) };
++        return retired.cursor;
+       });
+     },
+     insert(entry, index) {
+       reorder((order, cursor) => {
+-        order.splice(Math.min(order.length, cursor + Math.max(0, index)), 0, withId(entry));
++        const to = Math.min(order.length, cursor + Math.max(0, index));
++        order.splice(to, 0, withId(entry));
++        if (jump && jump.position >= to) jump = { position: jump.position + 1 };
+       });
+     },
+     dispose() {
+diff --git a/src/immersive/spectrum/spectrumHistory.ts b/src/immersive/spectrum/spectrumHistory.ts
+index 2beeabf..82f79cc 100644
+--- a/src/immersive/spectrum/spectrumHistory.ts
++++ b/src/immersive/spectrum/spectrumHistory.ts
+@@ -2,6 +2,7 @@ import { fb } from 'foo-webview-sdk/bridge';
+ import { atom, type Atom } from 'jotai/vanilla';
+ import { settle } from '../../host/hostCall.ts';
+ import { reducedMotionAtom } from '../../motion/reducedMotion.ts';
++import { playbackAtom } from '../../playback/playback.ts';
+ import type { Store } from '../../kit/store.ts';
+ import { barAxisFor, type BarAxis } from './barAxis.ts';
+ import type { FrameClock } from '../frame/frameScheduler.ts';
+@@ -53,6 +54,8 @@ export const SPECTRUM_FPS = 60;
+ export const SPECTRUM_FPS_REDUCED = 15;
+ /** 这么久（毫秒）没有新帧就算安静了 */
+ export const SILENT_MS = 2000;
++/** With music playing and no spectrum, how long until the feed is opened again */
++const RETRY_MS = 4000;
+ /**
+  * 逐柱指数平滑：60 Hz 一帧留这么多上一帧，别的帧距按幂折算。取 0 即不混：沉浸视图看的是起伏，
+  * 混进上一帧会把这一刻的谷填平；FFT 窗本身已让相邻帧很像，停顿感交给柱的峰值点
+@@ -171,9 +174,30 @@ export function startSpectrumHistory(
+     silentTimer = setTimeout(() => {
+       silentTimer = undefined;
+       setStatus('silent');
++      armRetry();
+     }, SILENT_MS);
+   }
+ 
++  // the feed can die under us (the output device changed, the host restarted its visualisation): with music
++  // playing and no frames, or the host saying no, open it again a little later instead of staying empty
++  let retryTimer: ReturnType<typeof setTimeout> | undefined;
++  function clearRetry(): void {
++    if (retryTimer) clearTimeout(retryTimer);
++    retryTimer = undefined;
++  }
++  function armRetry(): void {
++    clearRetry();
++    retryTimer = setTimeout(() => {
++      retryTimer = undefined;
++      if (disposed || visibility.hidden()) return;
++      if (store.get(playbackAtom).state !== 'playing') return armRetry();
++      const status = store.get(statusAtom);
++      if (status !== 'silent' && status !== 'unavailable') return;
++      gate = null;
++      sync();
++    }, RETRY_MS);
++  }
++
+   /**
+    * `payload` 是主订阅的应答（山脊图开着时是长窗那份，关着时是柱那份）；`barsSource` 是同一拍柱那份拉到的帧，
+    * 柱那份没另订或没成立时为 `null`，柱吃主订阅的帧。柱那份成立了却没拉到这一拍（`frame` 为 `null`）就不动缓冲，
+@@ -206,6 +230,7 @@ export function startSpectrumHistory(
+ 
+   function stop(): void {
+     generation += 1;
++    clearRetry();
+     const previous = feed;
+     feed = undefined;
+     clearSilent();
+@@ -226,6 +251,7 @@ export function startSpectrumHistory(
+     const mine = ++generation;
+     if (!host.isAvailable()) {
+       setStatus('unavailable');
++      armRetry();
+       return;
+     }
+     // 问不到就当没有：与宿主明确答否同一条路
+@@ -233,6 +259,7 @@ export function startSpectrumHistory(
+     if (mine !== generation || disposed || visibility.hidden()) return;
+     if (answer === null || answer.success !== true || !answer.available) {
+       setStatus('unavailable');
++      armRetry();
+       return;
+     }
+     const pullMs = 1000 / (store.get(reducedMotionAtom) ? SPECTRUM_FPS_REDUCED : SPECTRUM_FPS);
+@@ -246,6 +273,7 @@ export function startSpectrumHistory(
+       onRefused: () => {
+         clearSilent();
+         setStatus('unavailable');
++        armRetry();
+       },
+     });
+     // 订上了还没来帧也先算安静着数：2 s 内来帧就转 live，否则报 silent
+diff --git a/tests/unit/immersive/coverflow/engine.test.ts b/tests/unit/immersive/coverflow/engine.test.ts
+index 6f87422..363ec80 100644
+--- a/tests/unit/immersive/coverflow/engine.test.ts
++++ b/tests/unit/immersive/coverflow/engine.test.ts
+@@ -384,7 +384,7 @@ describe('leave：退场期间位置定住', () => {
+   });
+ });
+ 
+-describe('enter：进入时侧封面自屏外依次飞入', () => {
++describe('enter: the side covers slide out from behind the playing one, nearest first', () => {
+   function entered(count = 7, center = 3) {
+     const env = setup(count);
+     env.engine.jumpTo(center);
+@@ -392,53 +392,48 @@ describe('enter：进入时侧封面自屏外依次飞入', () => {
+     env.engine.paint();
+     return env;
+   }
++  /** How far a card has come from the middle towards its slot */
++  const travelled = (element: CardElement, index: number, center = 3) =>
++    offsetOf(element) / (slotAt(index - center).offset * 320);
+ 
+-  it('起点：选中项在原位，其余在右缘之外、不倾斜', () => {
++  it('at the start the selected cover is in place and the others sit hidden behind it, flat', () => {
+     const { elements } = entered();
+     expect(elements[3]?.style.transform).toBe('translateX(0px) scale(1)');
+     for (const [index, element] of elements.entries()) {
+       if (index === 3) continue;
+-      expect(offsetOf(element)).toBeGreaterThan(640);
++      expect(offsetOf(element)).toBeCloseTo(0, 6);
++      expect(opacityOf(element)).toBe(0);
++      expect(element.style.visibility).toBe('hidden');
+       expect(tilted(element)).toBe(false);
+     }
+   });
+ 
+-  it('从最左一张起飞，间隔 40 ms：同一时刻越靠左的越靠前', () => {
++  it('the nearest covers come out first, on both sides', () => {
+     const { elements, advance } = entered();
+     advance(ENTRY_DELAY_MS + 80);
+-    const offsets = [0, 1, 2, 4, 5, 6].map((index) => offsetOf(elements[index] as CardElement));
+-    const progressed = offsets.map((offset, order) => ({ offset, order }));
+-    // 起飞晚的还在屏外起点（偏移最大），起飞早的已经离开
+-    expect(progressed[0]?.offset).toBeLessThan(progressed[1]?.offset ?? 0);
+-    expect(progressed[1]?.offset).toBeLessThan(progressed[2]?.offset ?? 0);
+-    expect(progressed[5]?.offset).toBeGreaterThan(640);
++    for (const [near, far] of [
++      [2, 0],
++      [4, 6],
++    ] as const) {
++      expect(travelled(elements[near] as CardElement, near)).toBeGreaterThan(
++        travelled(elements[far] as CardElement, far),
++      );
++      expect(opacityOf(elements[near] as CardElement)).toBeGreaterThan(
++        opacityOf(elements[far] as CardElement),
++      );
++    }
+   });
+ 
+-  it('倾角另走一条时间线：起飞后先平着飞，TILT_DELAY_MS 后才转，落位时与槽位一致', () => {
++  it('every cover ends on its slot and the frames stop', () => {
+     const { elements, advance, hasFrame } = entered();
+-    advance(ENTRY_DELAY_MS + 80);
+-    const flying = elements[0] as CardElement;
+-    // 起飞 80 ms，位置已走过大半（过了中线），倾角还是 0
+-    expect(offsetOf(flying)).toBeLessThan(0);
+-    expect(tilted(flying)).toBe(false);
+-    advance(120);
+-    expect(tilted(flying)).toBe(true);
+-    const expected = slotAt(-3);
+-    const middleTilt = Number(/rotateY\((-?[\d.e+-]+)deg\)/.exec(flying.style.transform)?.[1]);
+-    expect(middleTilt).toBeGreaterThan(0);
+-    expect(middleTilt).toBeLessThan(expected.tilt);
+-    advance(entryEnd(6));
++    advance(entryEnd(6) + 16);
+     expect(hasFrame()).toBe(false);
+     for (const [index, element] of elements.entries()) {
+       expect(offsetOf(element)).toBeCloseTo(slotAt(index - 3).offset * 320, 6);
++      expect(opacityOf(element)).toBeCloseTo(slotAt(index - 3).opacity, 6);
+     }
+   });
+ 
+-  it('侧封面不透明度从一开始就是槽位的值，不淡入', () => {
+-    const { elements } = entered();
+-    expect(opacityOf(elements[0] as CardElement)).toBeCloseTo(slotAt(-3).opacity, 6);
+-  });
+-
+   it('入场途中浏览：位置补间与入场互不干扰', () => {
+     const { engine, advance } = entered(9, 4);
+     advance(300);
+diff --git a/tests/unit/immersive/scene/coverflowItems.test.ts b/tests/unit/immersive/scene/coverflowItems.test.ts
+index 3b50c1f..6fc9e66 100644
+--- a/tests/unit/immersive/scene/coverflowItems.test.ts
++++ b/tests/unit/immersive/scene/coverflowItems.test.ts
+@@ -246,3 +246,27 @@ describe('选中项的解析', () => {
+     expect(selectedIndexOf(items, 'queued:gone#0')).toBe(2);
+   });
+ });
++
++describe('coverflowItems: the shuffle plan on the played side', () => {
++  const history = (...names: string[]) =>
++    names.map((name, i) => ({ id: i + 1, handle: track(name).handle, track: track(name), position: 10 - i }));
++
++  it('ends with the plan songs (oldest first) after the history not already shown', () => {
++    const items = coverflowItems(
++      sources({
++        review: [played('old'), played('a'), played('b')],
++        planned: { guid: 'g', rows: [], history: history('now', 'skipped', 'b') },
++      }),
++    );
++    expect(items.map((item) => item.key)).toEqual([
++      'played:r-old',
++      'played:r-a',
++      'plan:3',
++      'plan:2',
++      'plan:1',
++    ]);
++    const skipped = items[3];
++    expect(skipped?.kind === 'played' && skipped.position).toBe(9);
++    expect(items[currentIndexOf(items)]?.key).toBe('plan:1');
++  });
++});
+diff --git a/tests/unit/immersive/scene/shufflePlanOrder.test.ts b/tests/unit/immersive/scene/shufflePlanOrder.test.ts
+new file mode 100644
+index 0000000..dbb3191
+--- /dev/null
++++ b/tests/unit/immersive/scene/shufflePlanOrder.test.ts
+@@ -0,0 +1,80 @@
++import { describe, expect, it } from 'vitest';
++import {
++  moveInPlan,
++  retireInPlan,
++  type PlanEntry,
++} from '../../../../src/immersive/scene/shufflePlan.ts';
++
++const deck = (...rows: number[]): PlanEntry[] => rows.map((row) => ({ id: row + 100, row }));
++const rows = (order: readonly PlanEntry[]) => order.map((entry) => entry.row);
++
++describe('retireInPlan: a song put among the played ones', () => {
++  // played 0 1 2 | playing 3 (cursor 4) | upcoming 4 5 6
++  it('an upcoming song dropped before the playing one lands right before it and counts as played', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = retireInPlan(order, 4, { position: 6 }, 3);
++    expect(rows(order)).toEqual([0, 1, 2, 6, 3, 4, 5]);
++    expect(change?.cursor).toBe(5);
++    expect(order[change!.cursor]?.row).toBe(4);
++  });
++
++  it('dropped further left it sits between the played songs', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = retireInPlan(order, 4, { position: 5 }, 1);
++    expect(rows(order)).toEqual([0, 5, 1, 2, 3, 4, 6]);
++    expect(change?.cursor).toBe(5);
++    expect(order[change!.cursor]?.row).toBe(4);
++  });
++
++  it('reordering on the played side keeps the cursor on the next song', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = retireInPlan(order, 4, { position: 0 }, 3);
++    expect(rows(order)).toEqual([1, 2, 0, 3, 4, 5, 6]);
++    expect(change?.cursor).toBe(4);
++    const back = retireInPlan(order, 4, { position: 2 }, 0);
++    expect(rows(order)).toEqual([0, 1, 2, 3, 4, 5, 6]);
++    expect(back?.cursor).toBe(4);
++  });
++
++  it('right after a song change the playing song is still the next one: dropping before it keeps it next', () => {
++    // played 0 1 2 | playing 3 = order[cursor] (cursor 3)
++    const order = deck(0, 1, 2, 3, 4, 5);
++    const change = retireInPlan(order, 3, { position: 5 }, 3);
++    expect(rows(order)).toEqual([0, 1, 2, 5, 3, 4]);
++    expect(order[change!.cursor]?.row).toBe(3);
++  });
++
++  it('a new song and the history songs it passes come in together, in order', () => {
++    const order = deck(0, 1, 2, 3);
++    const extra = (id: number): PlanEntry => ({ id, row: null, path: `p${id}`, track: {} as never });
++    const change = retireInPlan(order, 2, { entry: extra(1) }, 0, [extra(2), extra(3)]);
++    expect(order.map((entry) => entry.id)).toEqual([1, 2, 3, 100, 101, 102, 103]);
++    expect(change?.cursor).toBe(5);
++  });
++
++  it('a pending jump follows its song', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = retireInPlan(order, 4, { position: 5 }, 1);
++    // the song that was at 6 is still row 6
++    expect(order[change!.shift(6)]?.row).toBe(6);
++    expect(order[change!.shift(5)]?.row).toBe(5);
++  });
++});
++
++describe('moveInPlan', () => {
++  it('a played song dragged to the upcoming side leaves the played side', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = moveInPlan(order, 4, 1, 1);
++    // cursor steps back: played 0 2 | playing 3 | next 4 then 1
++    expect(rows(order)).toEqual([0, 2, 3, 4, 1, 5, 6]);
++    expect(change?.cursor).toBe(3);
++    expect(order[change!.cursor]?.row).toBe(4);
++  });
++
++  it('upcoming songs reorder as before', () => {
++    const order = deck(0, 1, 2, 3, 4, 5, 6);
++    const change = moveInPlan(order, 4, 6, 0);
++    expect(rows(order)).toEqual([0, 1, 2, 3, 6, 4, 5]);
++    expect(change?.cursor).toBe(4);
++  });
++});
+-- 
+2.43.0
+

@@ -1,0 +1,18 @@
+.spinner {
+  padding: var(--spacingVerticalXXXL) 0;
+}
+
+.notice {
+  margin-bottom: var(--spacingVerticalM);
+}
+
+/* 碟的分节头：比曲目行略重，不能折叠 */
+.disc {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 var(--spacingHorizontalS);
+  color: var(--text-primary);
+  font-size: var(--fontSizeBase300);
+  font-weight: var(--fontWeightSemibold);
+}

@@ -1,0 +1,5 @@
+.scene {
+  position: absolute;
+  inset: 0;
+  background: var(--glass-scene-bg, var(--colorNeutralBackground1));
+}

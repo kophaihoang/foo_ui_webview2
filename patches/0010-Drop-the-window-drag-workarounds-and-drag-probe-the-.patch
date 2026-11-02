@@ -1,0 +1,304 @@
+From 2be06beebcdef560d2ca739fd4659d2b3fa44e3a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 02:13:31 +0000
+Subject: [PATCH 10/16] Drop the window-drag workarounds and drag probe: the
+ window was moved by the UI Wizard component, not by the theme
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/page/DragProbe.tsx            | 124 --------------------
+ src/immersive/page/ImmersiveView.module.css |   2 +
+ src/immersive/page/ImmersiveView.tsx        |  33 +-----
+ src/immersive/page/windowDragLock.ts        |  43 -------
+ src/theme/ThemeRoot.tsx                     |  10 +-
+ 5 files changed, 4 insertions(+), 208 deletions(-)
+ delete mode 100644 src/immersive/page/DragProbe.tsx
+ delete mode 100644 src/immersive/page/windowDragLock.ts
+
+diff --git a/src/immersive/page/DragProbe.tsx b/src/immersive/page/DragProbe.tsx
+deleted file mode 100644
+index 7ca8a59..0000000
+--- a/src/immersive/page/DragProbe.tsx
++++ /dev/null
+@@ -1,124 +0,0 @@
+-import { fb } from 'foo-webview-sdk/bridge';
+-import { useEffect, useState } from 'react';
+-import { settle } from '../../host/hostCall.ts';
+-
+-/**
+- * Diagnostic: finds out how the window gets moved while dragging inside the immersive view.
+- * It watches the window position and the mouse as the page sees it, and prints what it saw:
+- *  - whether the page got the press at all (a press the host turns into a window drag never reaches it)
+- *  - how many moves the page got while the button was down
+- *  - whether anything under the press point is marked as a CSS drag region
+- *  - how far the window moved
+- */
+-export function DragProbe() {
+-  const [lines, setLines] = useState<string[]>([
+-    'probe ready: drag somewhere, then send a screenshot',
+-  ]);
+-  useEffect(() => {
+-    let disposed = false;
+-    let last: { x: number; y: number } | null = null;
+-    let down: {
+-      x: number;
+-      y: number;
+-      t: number;
+-      moves: number;
+-      target: string;
+-      regions: string;
+-    } | null = null;
+-    const log = (line: string) =>
+-      setLines((all) => {
+-        // keep the press that started this round on top: it says what sat under the pointer
+-        if (line.startsWith('DOWN')) return [line];
+-        const [head, ...rest] = all;
+-        return head?.startsWith('DOWN') ? [head, ...rest.slice(-8), line] : [...all.slice(-9), line];
+-      });
+-    const describe = (el: Element | null) =>
+-      el
+-        ? `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : ''}`
+-        : '-';
+-    const regionsAt = (x: number, y: number) =>
+-      document
+-        .elementsFromPoint(x, y)
+-        .map(
+-          (el) =>
+-            getComputedStyle(el).getPropertyValue('app-region') ||
+-            getComputedStyle(el).getPropertyValue('-webkit-app-region'),
+-        )
+-        .filter((v) => v && v !== 'none' && v !== 'no-drag')
+-        .join(',') || 'none';
+-    const onDown = (e: PointerEvent) => {
+-      down = {
+-        x: e.clientX,
+-        y: e.clientY,
+-        t: performance.now(),
+-        moves: 0,
+-        target: describe(e.target as Element),
+-        regions: regionsAt(e.clientX, e.clientY),
+-      };
+-      log(
+-        `DOWN at ${Math.round(e.clientX)},${Math.round(e.clientY)} on ${down.target} drag-css=${down.regions} type=${e.pointerType}`,
+-      );
+-    };
+-    const onMove = (e: PointerEvent) => {
+-      if (down && e.buttons & 1) down.moves++;
+-    };
+-    const onUp = (e: PointerEvent) => {
+-      if (!down) return;
+-      log(
+-        `UP after ${Math.round(performance.now() - down.t)}ms, page got ${down.moves} moves (${e.type})`,
+-      );
+-      down = null;
+-    };
+-    const onLost = () => log('page lost pointer capture');
+-    const onProbe = (e: Event) => log(String((e as CustomEvent).detail));
+-    window.addEventListener('drag-probe', onProbe);
+-    window.addEventListener('pointerdown', onDown, true);
+-    window.addEventListener('pointermove', onMove, true);
+-    window.addEventListener('pointerup', onUp, true);
+-    window.addEventListener('pointercancel', onUp, true);
+-    window.addEventListener('lostpointercapture', onLost, true);
+-    const poll = setInterval(() => {
+-      void settle(() => fb.ui.getBounds()).then((b) => {
+-        if (disposed || !b?.success) return;
+-        if (last && (b.x !== last.x || b.y !== last.y)) {
+-          log(
+-            `WINDOW MOVED ${b.x - last.x},${b.y - last.y} ${down ? `(page sees press, ${down.moves} moves)` : '(page sees NO press)'}`,
+-          );
+-        }
+-        last = { x: b.x, y: b.y };
+-      });
+-    }, 120);
+-    return () => {
+-      disposed = true;
+-      clearInterval(poll);
+-      window.removeEventListener('pointerdown', onDown, true);
+-      window.removeEventListener('pointermove', onMove, true);
+-      window.removeEventListener('pointerup', onUp, true);
+-      window.removeEventListener('pointercancel', onUp, true);
+-      window.removeEventListener('lostpointercapture', onLost, true);
+-      window.removeEventListener('drag-probe', onProbe);
+-    };
+-  }, []);
+-  return (
+-    <pre
+-      aria-hidden
+-      style={{
+-        position: 'absolute',
+-        left: 12,
+-        bottom: 12,
+-        zIndex: 9999,
+-        margin: 0,
+-        padding: '8px 10px',
+-        maxWidth: '70%',
+-        whiteSpace: 'pre-wrap',
+-        font: '11px/1.4 Consolas, monospace',
+-        color: '#bff',
+-        background: 'rgba(0,0,0,0.72)',
+-        borderRadius: 8,
+-        pointerEvents: 'none',
+-      }}
+-    >
+-      {lines.join('\n')}
+-    </pre>
+-  );
+-}
+diff --git a/src/immersive/page/ImmersiveView.module.css b/src/immersive/page/ImmersiveView.module.css
+index dad3816..699a5f2 100644
+--- a/src/immersive/page/ImmersiveView.module.css
++++ b/src/immersive/page/ImmersiveView.module.css
+@@ -40,4 +40,6 @@
+   position: absolute;
+   inset: 0 0 auto;
+   height: 48px;
++  -webkit-app-region: drag;
++  app-region: drag;
+ }
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index 4dbced8..cfc8c30 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -24,10 +24,6 @@ import type { ImmersiveScene } from './immersivePrefs.ts';
+ import { PresetsScene } from './PresetsScene.tsx';
+ import styles from './ImmersiveView.module.css';
+ import { startShufflePlan } from '../scene/shufflePlan.ts';
+-import { lockWindowDrag } from './windowDragLock.ts';
+-import { DragProbe } from './DragProbe.tsx';
+-import { fb } from 'foo-webview-sdk/bridge';
+-import { settle } from '../../host/hostCall.ts';
+ import { cycleNext, isCycleTarget } from './viewCycle.ts';
+ 
+ export interface ImmersiveViewProps {
+@@ -84,9 +80,6 @@ function useViewMotion(root: RefObject<HTMLElement | null>, current: boolean): b
+  * 挂上时把焦点收进来，离开时还给进来前拿着焦点的那个元素；Tab 只在这一层里转，不落到底下被盖住的键上
+  * 离开后的退场过渡里整层不接指针与焦点
+  */
+-/** Height of the strip along the top that moves the window (`.drag` in ImmersiveView.module.css) */
+-const DRAG_STRIP_PX = 48;
+-
+ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+   const t = useAtomValueRawSync(translateAtom);
+   const store = useStore();
+@@ -115,12 +108,6 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+     return attachImmersiveRoot(element);
+   }, [current]);
+ 
+-  // dragging a cover or the playhead must not drag the window: only the strip along the top moves it
+-  useEffect(() => {
+-    if (!current) return;
+-    return lockWindowDrag(DRAG_STRIP_PX);
+-  }, [current]);
+-
+   // shuffle plan: deal the upcoming songs ahead while the view is up (random playback order only)
+   useEffect(() => {
+     if (!current) return;
+@@ -176,25 +163,7 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+           <EntryStageContext value={stage}>
+             {scene === 'paper' ? <PaperScene /> : <PresetsScene />}
+           </EntryStageContext>
+-          {/* moves the window from script, not through app-region: a CSS drag region made the host move the
+-              window during drags anywhere in the view (dragging a cover, scrubbing the waveform) */}
+-          {current && <DragProbe />}
+-          <div
+-            className={styles.drag}
+-            aria-hidden
+-            onMouseDown={(event) => {
+-              if (event.button !== 0 || event.detail > 1) return;
+-              event.preventDefault();
+-              window.dispatchEvent(
+-                new CustomEvent('drag-probe', { detail: 'top strip asked to move the window' }),
+-              );
+-              void settle(() => fb.ui.startDrag());
+-            }}
+-            onDoubleClick={(event) => {
+-              event.stopPropagation();
+-              void settle(() => fb.ui.toggleMaximize());
+-            }}
+-          />
++          <div className={styles.drag} aria-hidden />
+           <ImmersiveControls
+             shell={shell}
+             shown={shown}
+diff --git a/src/immersive/page/windowDragLock.ts b/src/immersive/page/windowDragLock.ts
+deleted file mode 100644
+index 409ca06..0000000
+--- a/src/immersive/page/windowDragLock.ts
++++ /dev/null
+@@ -1,43 +0,0 @@
+-import { fb } from 'foo-webview-sdk/bridge';
+-import { settle } from '../../host/hostCall.ts';
+-
+-/**
+- * Keeps the window from being dragged anywhere below the top `strip` pixels while the immersive view is up.
+- *
+- * The host can treat parts of the page as window caption (a title-bar fallback, registered drag regions) and
+- * still hand the mouse to the page, so a drag that the page handles (moving a cover, scrubbing the waveform)
+- * also moved the window. A no-drag region over everything below the strip wins over those; it follows the
+- * window size and is taken away when the view closes. Returns the undo.
+- */
+-export function lockWindowDrag(strip: number): () => void {
+-  let disposed = false;
+-  let frame = 0;
+-  const apply = () => {
+-    if (disposed) return;
+-    const width = window.innerWidth;
+-    const height = Math.max(0, window.innerHeight - strip);
+-    void settle(() => fb.ui.setNoDragRegions([{ x: 0, y: strip, width, height }]));
+-  };
+-  const onResize = () => {
+-    cancelAnimationFrame(frame);
+-    frame = requestAnimationFrame(apply);
+-  };
+-  apply();
+-  window.addEventListener('resize', onResize);
+-  // the host also treats the top `titlebarHeight` pixels as caption when WebView2 has no answer for a point;
+-  // shrink that to a sliver while the view is up and put it back after
+-  let saved: number | null = null;
+-  void settle(() => fb.ui.getTitlebarHeight()).then((answer) => {
+-    if (disposed || !answer?.success) return;
+-    saved = answer.height;
+-    void settle(() => fb.ui.setTitlebarHeight(1));
+-  });
+-  return () => {
+-    disposed = true;
+-    cancelAnimationFrame(frame);
+-    window.removeEventListener('resize', onResize);
+-    void settle(() => fb.ui.clearNoDragRegions());
+-    const height = saved;
+-    if (height !== null) void settle(() => fb.ui.setTitlebarHeight(height));
+-  };
+-}
+diff --git a/src/theme/ThemeRoot.tsx b/src/theme/ThemeRoot.tsx
+index 313ecc6..f7ee309 100644
+--- a/src/theme/ThemeRoot.tsx
++++ b/src/theme/ThemeRoot.tsx
+@@ -104,14 +104,6 @@ export interface ThemeRootProps {
+  * 页面语言跟着界面语言走：读屏按它选发音，中日韩文字按它选字形
+  */
+ /** Immersive layers read these when clear glass is on (see ImmersiveView, PresetsScene, PaperScene, PaperCoverWash) */
+-/**
+- * While the immersive view is up nothing in the page is a CSS drag region: the host asks WebView2 for drag
+- * regions on every press and moved the window during drags inside the view. The view's top strip moves the
+- * window from script instead (`fb.ui.startDrag`)
+- */
+-const IMMERSIVE_NO_DRAG =
+-  ':root[data-immersive] *, :root[data-immersive] *::before, :root[data-immersive] *::after { -webkit-app-region: no-drag !important; app-region: no-drag !important; }\n';
+-
+ function clearGlassVars(level: number, wash: number): string {
+   const paper = ((level / 100) * 0.6).toFixed(3);
+   return (
+@@ -205,7 +197,7 @@ export function ThemeRoot({ children }: ThemeRootProps) {
+   return (
+     <FluentProvider ref={rootRef} theme={theme} className={className} style={style}>
+       {/* Portal 复制类名而不复制行内变量；作用域规则让覆盖面板共享同一份不透明底色。 */}
+-      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground};${clear ? ` --bg-pane: color-mix(in srgb, ${tokens.colorNeutralBackground1} ${clearLevel}%, transparent);` : ''} }\n${clear ? `:root { ${clearGlassVars(clearLevel, clearWash)} }\n:root[data-immersive] #root { visibility: hidden; }\n` : ''}${IMMERSIVE_NO_DRAG}${SCROLLBAR_CSS_RULES}`}</style>
++      <style>{`.${panelScope}.${panelScope} { --bg-panel-overlay: ${panelBackground};${clear ? ` --bg-pane: color-mix(in srgb, ${tokens.colorNeutralBackground1} ${clearLevel}%, transparent);` : ''} }\n${clear ? `:root { ${clearGlassVars(clearLevel, clearWash)} }\n:root[data-immersive] #root { visibility: hidden; }\n` : ''}${SCROLLBAR_CSS_RULES}`}</style>
+       <WindowBackground
+         solidColor={tintedSurface(tokens.colorNeutralBackground2, tone, scheme, {
+           tint: themeTint,
+-- 
+2.43.0
+

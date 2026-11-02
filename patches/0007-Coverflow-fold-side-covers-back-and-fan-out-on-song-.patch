@@ -1,0 +1,209 @@
+From ed36f00bc754d565c4a93f68bb1cc928d003e7cf Mon Sep 17 00:00:00 2001
+From: LVH <kophaileviethoang@gmail.com>
+Date: Sun, 1 Nov 2026 18:41:39 +0000
+Subject: [PATCH 07/16] Coverflow: fold side covers back and fan out on song
+ change; shrink host title-bar fallback while immersive
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/Coverflow.tsx | 17 +++++++--
+ src/immersive/coverflow/engine.ts     | 52 +++++++++++++++++++++------
+ src/immersive/page/windowDragLock.ts  | 10 ++++++
+ 3 files changed, 65 insertions(+), 14 deletions(-)
+
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index a059cb6..df8f374 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -252,17 +252,28 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     engine.setReduced(reduced);
+   });
+   // 焦点或条目序列变更时触发补间位移
+-  const prior = useRef<{ keys: readonly string[]; selected: number } | null>(null);
++  const prior = useRef<{
++    keys: readonly string[];
++    selected: number;
++    playing: string | null;
++  } | null>(null);
+   useLayoutEffect(() => {
+     settle.current = () => setSpan({ from: selected, to: selected });
+     const keys = items.map((item) => item.key);
+     const before = prior.current;
+-    prior.current = { keys, selected };
++    const playing = items[currentAt]?.track?.handle ?? null;
++    prior.current = { keys, selected, playing };
+     // 退场期间保持视心位置固定，避免关闭模式时因重置为当前曲目而产生滚动
+     if (leaving && before) return;
+     if (!before) {
+       engine.jumpTo(selected);
+       if (!leaving) engine.enter(selected);
++    } else if (before.playing !== playing && selected === currentAt) {
++      // a new song while following playback: the side covers fold back behind the playing cover and fan out
++      // again around the new one, like opening the view, instead of the whole row sliding over
++      engine.jumpTo(selected);
++      engine.regather(selected);
++      setSpan({ from: selected, to: selected });
+     } else if (!sameKeys(before.keys, keys)) {
+       engine.rekey(before.keys, keys, selected);
+       setSpan({ from: engine.position(), to: selected });
+@@ -272,7 +283,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+       engine.goTo(selected);
+       setSpan({ from, to: selected });
+     }
+-  }, [engine, items, selected, leaving]);
++  }, [engine, items, selected, leaving, currentAt]);
+   // 提交后重绘以避免新挂载卡片首帧位置闪烁
+   useLayoutEffect(() => {
+     engine.paint();
+diff --git a/src/immersive/coverflow/engine.ts b/src/immersive/coverflow/engine.ts
+index e245189..1e610ae 100644
+--- a/src/immersive/coverflow/engine.ts
++++ b/src/immersive/coverflow/engine.ts
+@@ -1,5 +1,6 @@
+ import { reanchor } from './anchor.ts';
+ import {
++  ENTRY_DELAY_MS,
+   EXIT_MS,
+   REDUCED_FADE_MS,
+   enteringPose,
+@@ -76,6 +77,8 @@ export interface CoverflowEngine {
+   rekey(previous: readonly string[], next: readonly string[], target: number): void;
+   /** 进入：选中项 `center` 不飞，其余登记着的卡从左到右依次飞入；减弱动效时在槽位上淡入 */
+   enter(center: number): void;
++  /** A new song: the side covers fold back behind the playing cover, then fan out again as on entering */
++  regather(center: number): void;
+   /** 退出：整排淡出，正在播放那张当帧藏起 */
+   leave(): void;
+   /** 立刻按此刻的状态写一遍 */
+@@ -97,6 +100,10 @@ interface Intro {
+ 
+ /** 点亮系数朝目标走的时间常数，毫秒：约 70 ms 走过 63%、210 ms 走过 95%。比相邻两次按键的间隔长，快速滚动时来不及亮 */
+ const LIT_TAU_MS = 70;
++/** Folding the side covers back behind the playing one, ms */
++const GATHER_MS = 220;
++/** After a fold the fan-out starts this soon, ms (entering waits for the shared cover glide instead) */
++const REGATHER_DELAY_MS = 40;
+ const LIT_EPSILON = 0.005;
+ 
+ export function createCoverflowEngine(
+@@ -111,6 +118,7 @@ export function createCoverflowEngine(
+   let glide: Glide | null = null;
+   let intro: Intro | null = null;
+   let outro: { readonly start: number } | null = null;
++  let gather: { readonly start: number; readonly center: number } | null = null;
+   let cancel: (() => void) | null = null;
+   // 每张卡的点亮系数，0 到 1：只有浏览的落点那一张（序号等于 `rest`）朝 1 走，别的朝 0 走。
+   // 没有点亮的封面经过中间位置也保持压暗，滚动时一张张掠过不会一闪一闪地变亮，只有确定的落点才亮起来
+@@ -126,6 +134,7 @@ export function createCoverflowEngine(
+   function animating(now: number): boolean {
+     return (
+       (glide !== null && !glideDone(glide, now)) ||
++      gather !== null ||
+       (intro !== null && now - intro.start < intro.duration) ||
+       (outro !== null && now - outro.start < EXIT_MS) ||
+       (frozenAt === null &&
+@@ -138,6 +147,12 @@ export function createCoverflowEngine(
+     // 间距在入场插值之前收紧，飞入的终点才是收紧后的槽位
+     let pose = { ...slot, offset: slot.offset * geometry.spread };
+     let factor = 1;
++    if (gather && !card.current) {
++      const t = Math.min(1, (now - gather.start) / GATHER_MS);
++      const folded = t * t;
++      pose = { ...pose, offset: pose.offset * (1 - folded), tilt: pose.tilt * (1 - folded) };
++      factor *= 1 - folded;
++    }
+     const rank = intro?.ranks.get(card.key);
+     if (intro && rank !== undefined) {
+       const elapsed = now - intro.start;
+@@ -199,11 +214,29 @@ export function createCoverflowEngine(
+       cancel = null;
+       const now = clock.now();
+       paintAt(now);
++      if (gather && now - gather.start >= GATHER_MS) {
++        const { center } = gather;
++        gather = null;
++        startIntro(center, now - (ENTRY_DELAY_MS - REGATHER_DELAY_MS));
++      }
+       if (animating(now)) schedule();
+       else settle(now);
+     });
+   }
+ 
++  function startIntro(center: number, start: number): void {
++    const ranks = new Map<string, number>();
++    for (const card of cards) {
++      if (card.index !== center) ranks.set(card.key, Math.abs(card.index - center) - 1);
++    }
++    intro = {
++      start,
++      fade: reduced,
++      duration: reduced ? REDUCED_FADE_MS : entryEnd(ranks.size),
++      ranks,
++    };
++  }
++
+   /**
+    * `velocity` 是此刻带着的速度：条目表重排时是同一段运动的延续，先记下来整个传过来；缺省是用户又操作了一下，
+    * 只保留补间途中当前速度的一部分（`CARRY`），免得松手后惯性太大
+@@ -249,6 +282,7 @@ export function createCoverflowEngine(
+       // 看不见时没有人在看动效：位置、入场、退场都落到终态
+       glide = null;
+       intro = null;
++      gather = null;
+       if (outro) outro = { start: Number.NEGATIVE_INFINITY };
+       cancel?.();
+       cancel = null;
+@@ -267,17 +301,13 @@ export function createCoverflowEngine(
+     },
+     enter(center) {
+       if (!visible) return;
+-      const ranks = new Map<string, number>();
+-      for (const card of cards) {
+-        if (card.index !== center) ranks.set(card.key, Math.abs(card.index - center) - 1);
+-      }
+-      const now = clock.now();
+-      intro = {
+-        start: now,
+-        fade: reduced,
+-        duration: reduced ? REDUCED_FADE_MS : entryEnd(ranks.size),
+-        ranks,
+-      };
++      startIntro(center, clock.now());
++      schedule();
++    },
++    regather(center) {
++      if (!visible || reduced || frozenAt !== null) return;
++      intro = null;
++      gather = { start: clock.now(), center };
+       schedule();
+     },
+     leave() {
+diff --git a/src/immersive/page/windowDragLock.ts b/src/immersive/page/windowDragLock.ts
+index cfe974a..409ca06 100644
+--- a/src/immersive/page/windowDragLock.ts
++++ b/src/immersive/page/windowDragLock.ts
+@@ -24,10 +24,20 @@ export function lockWindowDrag(strip: number): () => void {
+   };
+   apply();
+   window.addEventListener('resize', onResize);
++  // the host also treats the top `titlebarHeight` pixels as caption when WebView2 has no answer for a point;
++  // shrink that to a sliver while the view is up and put it back after
++  let saved: number | null = null;
++  void settle(() => fb.ui.getTitlebarHeight()).then((answer) => {
++    if (disposed || !answer?.success) return;
++    saved = answer.height;
++    void settle(() => fb.ui.setTitlebarHeight(1));
++  });
+   return () => {
+     disposed = true;
+     cancelAnimationFrame(frame);
+     window.removeEventListener('resize', onResize);
+     void settle(() => fb.ui.clearNoDragRegions());
++    const height = saved;
++    if (height !== null) void settle(() => fb.ui.setTitlebarHeight(height));
+   };
+ }
+-- 
+2.43.0
+

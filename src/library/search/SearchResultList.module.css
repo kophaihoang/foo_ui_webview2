@@ -1,0 +1,31 @@
+.root {
+  position: relative;
+  min-height: 56px;
+  outline: none;
+}
+.root:focus-visible {
+  outline: var(--strokeWidthThick) solid var(--colorStrokeFocus2);
+  outline-offset: -2px;
+}
+.head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.item {
+  display: grid;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 56px;
+}
+.viewport {
+  position: sticky;
+  top: 0;
+  overflow: hidden;
+}
+/* 行带不设 will-change：单独成合成层后按小数偏移摆放，125% 这类缩放下文字发虚 */
+.strip {
+  position: relative;
+}

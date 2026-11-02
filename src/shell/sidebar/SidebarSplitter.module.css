@@ -1,0 +1,7 @@
+/* 主内容区的左右与底部留白不属于卡片，手柄在卡片左缘骑缝并与卡片等高 */
+.splitter {
+  position: absolute;
+  top: 0;
+  bottom: var(--spacingVerticalL);
+  left: calc(var(--spacingHorizontalL) - var(--spacingHorizontalS) / 2);
+}

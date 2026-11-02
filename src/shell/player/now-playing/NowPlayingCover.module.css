@@ -1,0 +1,20 @@
+/* 占位时是一块中性底加居中的音符。圆角按所在处，见组件的 `shape`；换图的叠层样式在 `CoverLayers`。 */
+.root {
+  flex: none;
+  border-radius: var(--borderRadiusMedium);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+}
+
+.root[data-shape='lcd'] {
+  border-radius: var(--borderRadiusLarge) 0 0 var(--borderRadiusLarge);
+}
+
+.root[data-shape='round'] {
+  border-radius: var(--borderRadiusCircular);
+}
+
+.placeholder {
+  width: 20px;
+  height: 20px;
+}

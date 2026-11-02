@@ -1,0 +1,45 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  min-width: 0;
+  gap: var(--spacingVerticalS);
+}
+
+/* 控件与说明留在内容边线内；树的滚动容器占满余下宽度 */
+.header,
+.locator,
+.pins,
+.root > .label,
+.root > .hint {
+  padding-inline: var(--library-content-inset, 0px);
+}
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalXS);
+  color: var(--colorNeutralForeground2);
+}
+.header > span {
+  flex: 1;
+}
+.pins {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacingVerticalXS);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: var(--spacingVerticalM);
+}
+.label,
+.hint {
+  color: var(--colorNeutralForeground3);
+  font-size: var(--fontSizeBase200);
+  margin: 0;
+}
+.label,
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

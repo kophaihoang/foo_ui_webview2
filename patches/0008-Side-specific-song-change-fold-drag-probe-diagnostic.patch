@@ -1,0 +1,340 @@
+From 8425c35018f329f8be00bd3a951fd6103deb0b66 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 1 Nov 2026 19:00:29 +0000
+Subject: [PATCH 08/16] Side-specific song-change fold; drag probe diagnostic
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/Coverflow.tsx |  35 ++++++--
+ src/immersive/coverflow/engine.ts     |  42 ++++++---
+ src/immersive/page/DragProbe.tsx      | 118 ++++++++++++++++++++++++++
+ src/immersive/page/ImmersiveView.tsx  |   5 ++
+ 4 files changed, 181 insertions(+), 19 deletions(-)
+ create mode 100644 src/immersive/page/DragProbe.tsx
+
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index df8f374..284c144 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -161,6 +161,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+       return;
+     }
+     const plan = playPlanOf(item);
++    picked.current = true;
+     // 起播成功后暂存选中状态，避免数据表尚未响应切歌前视心回弹至旧曲目位置；待数据表更新且该曲目转为当前曲目后，由联动副作用重置浏览状态；起播失败时保留选中位置
+     if (plan) await perform(plan);
+   };
+@@ -256,24 +257,42 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     keys: readonly string[];
+     selected: number;
+     playing: string | null;
++    /** where the playing song sat in `keys` */
++    current: number;
+   } | null>(null);
++  /** A song was just started from a card here; its arrival is handled as following playback */
++  const picked = useRef(false);
+   useLayoutEffect(() => {
+     settle.current = () => setSpan({ from: selected, to: selected });
+     const keys = items.map((item) => item.key);
+     const before = prior.current;
+     const playing = items[currentAt]?.track?.handle ?? null;
+-    prior.current = { keys, selected, playing };
++    prior.current = { keys, selected, playing, current: currentAt };
+     // 退场期间保持视心位置固定，避免关闭模式时因重置为当前曲目而产生滚动
+     if (leaving && before) return;
+     if (!before) {
+       engine.jumpTo(selected);
+       if (!leaving) engine.enter(selected);
+-    } else if (before.playing !== playing && selected === currentAt) {
+-      // a new song while following playback: the side covers fold back behind the playing cover and fan out
+-      // again around the new one, like opening the view, instead of the whole row sliding over
+-      engine.jumpTo(selected);
+-      engine.regather(selected);
+-      setSpan({ from: selected, to: selected });
++    } else if (before.playing !== playing && (selected === currentAt || picked.current)) {
++      // a new song while following playback (or one just picked here). Only a side whose songs changed
++      // folds back behind the playing cover and fans out again:
++      //  - the next song, or one picked on the right: the songs ahead only slide over, so they glide; the
++      //    side behind gains the song that just played, so it folds and fans out
++      //  - a song picked on the left (played before): both sides change, both fold
++      picked.current = false;
++      if (browsed !== null) sceneActions.browse(null);
++      const was = before.keys.indexOf(items[currentAt]?.key ?? '');
++      const fromRight = was >= 0 && was > before.current;
++      prior.current = { keys, selected: currentAt, playing, current: currentAt };
++      if (fromRight) {
++        engine.rekey(before.keys, keys, currentAt);
++        engine.regather(currentAt, { left: true, right: false });
++        setSpan({ from: engine.position(), to: currentAt });
++      } else {
++        engine.jumpTo(currentAt);
++        engine.regather(currentAt, { left: true, right: true });
++        setSpan({ from: currentAt, to: currentAt });
++      }
+     } else if (!sameKeys(before.keys, keys)) {
+       engine.rekey(before.keys, keys, selected);
+       setSpan({ from: engine.position(), to: selected });
+@@ -283,7 +302,7 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+       engine.goTo(selected);
+       setSpan({ from, to: selected });
+     }
+-  }, [engine, items, selected, leaving, currentAt]);
++  }, [engine, items, selected, leaving, currentAt, browsed, sceneActions]);
+   // 提交后重绘以避免新挂载卡片首帧位置闪烁
+   useLayoutEffect(() => {
+     engine.paint();
+diff --git a/src/immersive/coverflow/engine.ts b/src/immersive/coverflow/engine.ts
+index 1e610ae..660cfb2 100644
+--- a/src/immersive/coverflow/engine.ts
++++ b/src/immersive/coverflow/engine.ts
+@@ -77,8 +77,11 @@ export interface CoverflowEngine {
+   rekey(previous: readonly string[], next: readonly string[], target: number): void;
+   /** 进入：选中项 `center` 不飞，其余登记着的卡从左到右依次飞入；减弱动效时在槽位上淡入 */
+   enter(center: number): void;
+-  /** A new song: the side covers fold back behind the playing cover, then fan out again as on entering */
+-  regather(center: number): void;
++  /**
++   * A new song: the side covers on the given sides fold back behind the playing cover, then fan out again
++   * as on entering. A side left out keeps its cards where they are (they glide as usual)
++   */
++  regather(center: number, sides: GatherSides): void;
+   /** 退出：整排淡出，正在播放那张当帧藏起 */
+   leave(): void;
+   /** 立刻按此刻的状态写一遍 */
+@@ -86,6 +89,11 @@ export interface CoverflowEngine {
+   dispose(): void;
+ }
+ 
++export interface GatherSides {
++  readonly left: boolean;
++  readonly right: boolean;
++}
++
+ export interface EngineOptions {
+   /** 位置补间走完时叫，用来把渲染的范围收回到选中项两侧 */
+   readonly onSettle?: () => void;
+@@ -118,7 +126,13 @@ export function createCoverflowEngine(
+   let glide: Glide | null = null;
+   let intro: Intro | null = null;
+   let outro: { readonly start: number } | null = null;
+-  let gather: { readonly start: number; readonly center: number } | null = null;
++  let gather: {
++    readonly start: number;
++    readonly center: number;
++    readonly sides: GatherSides;
++  } | null = null;
++  const onSide = (index: number, center: number, sides: GatherSides) =>
++    index < center ? sides.left : index > center ? sides.right : false;
+   let cancel: (() => void) | null = null;
+   // 每张卡的点亮系数，0 到 1：只有浏览的落点那一张（序号等于 `rest`）朝 1 走，别的朝 0 走。
+   // 没有点亮的封面经过中间位置也保持压暗，滚动时一张张掠过不会一闪一闪地变亮，只有确定的落点才亮起来
+@@ -147,7 +161,7 @@ export function createCoverflowEngine(
+     // 间距在入场插值之前收紧，飞入的终点才是收紧后的槽位
+     let pose = { ...slot, offset: slot.offset * geometry.spread };
+     let factor = 1;
+-    if (gather && !card.current) {
++    if (gather && !card.current && onSide(card.index, gather.center, gather.sides)) {
+       const t = Math.min(1, (now - gather.start) / GATHER_MS);
+       const folded = t * t;
+       pose = { ...pose, offset: pose.offset * (1 - folded), tilt: pose.tilt * (1 - folded) };
+@@ -215,19 +229,25 @@ export function createCoverflowEngine(
+       const now = clock.now();
+       paintAt(now);
+       if (gather && now - gather.start >= GATHER_MS) {
+-        const { center } = gather;
++        const { center, sides } = gather;
+         gather = null;
+-        startIntro(center, now - (ENTRY_DELAY_MS - REGATHER_DELAY_MS));
++        startIntro(center, now - (ENTRY_DELAY_MS - REGATHER_DELAY_MS), sides);
+       }
+       if (animating(now)) schedule();
+       else settle(now);
+     });
+   }
+ 
+-  function startIntro(center: number, start: number): void {
++  function startIntro(
++    center: number,
++    start: number,
++    sides: GatherSides = { left: true, right: true },
++  ): void {
+     const ranks = new Map<string, number>();
+     for (const card of cards) {
+-      if (card.index !== center) ranks.set(card.key, Math.abs(card.index - center) - 1);
++      if (onSide(card.index, center, sides)) {
++        ranks.set(card.key, Math.abs(card.index - center) - 1);
++      }
+     }
+     intro = {
+       start,
+@@ -304,10 +324,10 @@ export function createCoverflowEngine(
+       startIntro(center, clock.now());
+       schedule();
+     },
+-    regather(center) {
+-      if (!visible || reduced || frozenAt !== null) return;
++    regather(center, sides) {
++      if (!visible || reduced || frozenAt !== null || (!sides.left && !sides.right)) return;
+       intro = null;
+-      gather = { start: clock.now(), center };
++      gather = { start: clock.now(), center, sides };
+       schedule();
+     },
+     leave() {
+diff --git a/src/immersive/page/DragProbe.tsx b/src/immersive/page/DragProbe.tsx
+new file mode 100644
+index 0000000..9199461
+--- /dev/null
++++ b/src/immersive/page/DragProbe.tsx
+@@ -0,0 +1,118 @@
++import { fb } from 'foo-webview-sdk/bridge';
++import { useEffect, useState } from 'react';
++import { settle } from '../../host/hostCall.ts';
++
++/**
++ * Diagnostic: finds out how the window gets moved while dragging inside the immersive view.
++ * It watches the window position and the mouse as the page sees it, and prints what it saw:
++ *  - whether the page got the press at all (a press the host turns into a window drag never reaches it)
++ *  - how many moves the page got while the button was down
++ *  - whether anything under the press point is marked as a CSS drag region
++ *  - how far the window moved
++ */
++export function DragProbe() {
++  const [lines, setLines] = useState<string[]>([
++    'probe ready: drag somewhere, then send a screenshot',
++  ]);
++  useEffect(() => {
++    let disposed = false;
++    let last: { x: number; y: number } | null = null;
++    let down: {
++      x: number;
++      y: number;
++      t: number;
++      moves: number;
++      target: string;
++      regions: string;
++    } | null = null;
++    const log = (line: string) => setLines((all) => [...all.slice(-7), line]);
++    const describe = (el: Element | null) =>
++      el
++        ? `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : ''}`
++        : '-';
++    const regionsAt = (x: number, y: number) =>
++      document
++        .elementsFromPoint(x, y)
++        .map(
++          (el) =>
++            getComputedStyle(el).getPropertyValue('app-region') ||
++            getComputedStyle(el).getPropertyValue('-webkit-app-region'),
++        )
++        .filter((v) => v && v !== 'none' && v !== 'no-drag')
++        .join(',') || 'none';
++    const onDown = (e: PointerEvent) => {
++      down = {
++        x: e.clientX,
++        y: e.clientY,
++        t: performance.now(),
++        moves: 0,
++        target: describe(e.target as Element),
++        regions: regionsAt(e.clientX, e.clientY),
++      };
++      log(
++        `DOWN at ${Math.round(e.clientX)},${Math.round(e.clientY)} on ${down.target} drag-css=${down.regions} type=${e.pointerType}`,
++      );
++    };
++    const onMove = (e: PointerEvent) => {
++      if (down && e.buttons & 1) down.moves++;
++    };
++    const onUp = (e: PointerEvent) => {
++      if (!down) return;
++      log(
++        `UP after ${Math.round(performance.now() - down.t)}ms, page got ${down.moves} moves (${e.type})`,
++      );
++      down = null;
++    };
++    const onLost = () => log('page lost pointer capture');
++    const onProbe = (e: Event) => log(String((e as CustomEvent).detail));
++    window.addEventListener('drag-probe', onProbe);
++    window.addEventListener('pointerdown', onDown, true);
++    window.addEventListener('pointermove', onMove, true);
++    window.addEventListener('pointerup', onUp, true);
++    window.addEventListener('pointercancel', onUp, true);
++    window.addEventListener('lostpointercapture', onLost, true);
++    const poll = setInterval(() => {
++      void settle(() => fb.ui.getBounds()).then((b) => {
++        if (disposed || !b?.success) return;
++        if (last && (b.x !== last.x || b.y !== last.y)) {
++          log(
++            `WINDOW MOVED ${b.x - last.x},${b.y - last.y} ${down ? `(page sees press, ${down.moves} moves)` : '(page sees NO press)'}`,
++          );
++        }
++        last = { x: b.x, y: b.y };
++      });
++    }, 120);
++    return () => {
++      disposed = true;
++      clearInterval(poll);
++      window.removeEventListener('pointerdown', onDown, true);
++      window.removeEventListener('pointermove', onMove, true);
++      window.removeEventListener('pointerup', onUp, true);
++      window.removeEventListener('pointercancel', onUp, true);
++      window.removeEventListener('lostpointercapture', onLost, true);
++      window.removeEventListener('drag-probe', onProbe);
++    };
++  }, []);
++  return (
++    <pre
++      aria-hidden
++      style={{
++        position: 'absolute',
++        left: 12,
++        bottom: 12,
++        zIndex: 9999,
++        margin: 0,
++        padding: '8px 10px',
++        maxWidth: '70%',
++        whiteSpace: 'pre-wrap',
++        font: '11px/1.4 Consolas, monospace',
++        color: '#bff',
++        background: 'rgba(0,0,0,0.72)',
++        borderRadius: 8,
++        pointerEvents: 'none',
++      }}
++    >
++      {lines.join('\n')}
++    </pre>
++  );
++}
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index 7304953..4dbced8 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -25,6 +25,7 @@ import { PresetsScene } from './PresetsScene.tsx';
+ import styles from './ImmersiveView.module.css';
+ import { startShufflePlan } from '../scene/shufflePlan.ts';
+ import { lockWindowDrag } from './windowDragLock.ts';
++import { DragProbe } from './DragProbe.tsx';
+ import { fb } from 'foo-webview-sdk/bridge';
+ import { settle } from '../../host/hostCall.ts';
+ import { cycleNext, isCycleTarget } from './viewCycle.ts';
+@@ -177,12 +178,16 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+           </EntryStageContext>
+           {/* moves the window from script, not through app-region: a CSS drag region made the host move the
+               window during drags anywhere in the view (dragging a cover, scrubbing the waveform) */}
++          {current && <DragProbe />}
+           <div
+             className={styles.drag}
+             aria-hidden
+             onMouseDown={(event) => {
+               if (event.button !== 0 || event.detail > 1) return;
+               event.preventDefault();
++              window.dispatchEvent(
++                new CustomEvent('drag-probe', { detail: 'top strip asked to move the window' }),
++              );
+               void settle(() => fb.ui.startDrag());
+             }}
+             onDoubleClick={(event) => {
+-- 
+2.43.0
+

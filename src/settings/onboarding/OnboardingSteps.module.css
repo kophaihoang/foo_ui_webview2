@@ -1,0 +1,43 @@
+/* 第 1 步的根目录列表：与设置卡同底同边框，一行一个根目录，曲目数靠右 */
+.roots {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: var(--spacingVerticalXS) var(--spacingHorizontalL);
+  border: var(--strokeWidthThin) solid var(--line);
+  border-radius: var(--radius-control);
+  background-color: var(--bg-surface);
+  list-style: none;
+}
+
+.root,
+.more {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalM);
+  min-height: 36px;
+}
+
+.rootIcon {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.rootPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rootCount,
+.more {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--fontSizeBase200);
+  line-height: var(--lineHeightBase200);
+}

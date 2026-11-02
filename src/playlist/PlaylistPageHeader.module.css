@@ -1,0 +1,37 @@
+/* 标题行在上：左边列表名、记号与副题，右边播放与 ⋯；下面是命令栏 */
+.root {
+  display: grid;
+  gap: var(--spacingVerticalS);
+  min-width: 0;
+  padding-bottom: var(--spacingVerticalXS);
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacingHorizontalL);
+  min-width: 0;
+}
+.titles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacingVerticalXXS) var(--spacingHorizontalMNudge);
+  min-width: 0;
+}
+.mark {
+  flex: none;
+  align-self: center;
+  color: var(--text-secondary);
+}
+.subtitle {
+  flex: 0 1 auto;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacingHorizontalXS);
+}

@@ -1,0 +1,41 @@
+/* 标题行在上：左边标题与统计，右边集合操作；下面是命令栏 */
+.root {
+  display: grid;
+  gap: var(--spacingVerticalS);
+  min-width: 0;
+  padding-bottom: var(--spacingVerticalXS);
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacingHorizontalL);
+  min-width: 0;
+}
+.titles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacingVerticalXXS) var(--spacingHorizontalMNudge);
+  min-width: 0;
+}
+.subtitle {
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacingHorizontalXS);
+}
+/* 错误说明窄窗允许换行 */
+.invalid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacingHorizontalS);
+  color: var(--colorPaletteRedForeground1);
+}

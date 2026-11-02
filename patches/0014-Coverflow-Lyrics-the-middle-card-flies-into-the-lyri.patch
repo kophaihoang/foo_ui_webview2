@@ -1,0 +1,397 @@
+From d342c8de10d0eeace938a621af6ad11de9d79c1d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 04:34:40 +0000
+Subject: [PATCH 14/16] Coverflow -> Lyrics: the middle card flies into the
+ lyrics cover
+
+The flight from coverFlight.ts is now general (FlightPlan): Lyrics -> Blueprint and Coverflow -> Lyrics use
+it. The lyrics cover's spot is read off the hidden split preset (its width, cover size, stack top, reach,
+centred), so nothing is built while the cover moves; the lyrics view is revealed when the copy is all but
+landed and fades in around it. The start layer shows the card's own picture, the end layer the cover's.
+The coverflow key's exit takes the same flight.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/cover-art/CoverArt.module.css |   5 +
+ src/immersive/page/CoverflowKey.tsx         |  12 +-
+ src/immersive/page/coverFlight.ts           | 171 +++++++++++++++-----
+ src/immersive/page/viewCycle.ts             |   7 +-
+ 4 files changed, 146 insertions(+), 49 deletions(-)
+
+diff --git a/src/immersive/cover-art/CoverArt.module.css b/src/immersive/cover-art/CoverArt.module.css
+index 3ccfa6a..47bc4db 100644
+--- a/src/immersive/cover-art/CoverArt.module.css
++++ b/src/immersive/cover-art/CoverArt.module.css
+@@ -42,3 +42,8 @@
+     opacity: 0;
+   }
+ }
++
++/* a copy of the cover is flying in (`page/coverFlight.ts`): this one shows once it has landed */
++:global(html[data-cover-flight]) .cover {
++  visibility: hidden;
++}
+diff --git a/src/immersive/page/CoverflowKey.tsx b/src/immersive/page/CoverflowKey.tsx
+index 1f5582a..8c64330 100644
+--- a/src/immersive/page/CoverflowKey.tsx
++++ b/src/immersive/page/CoverflowKey.tsx
+@@ -1,8 +1,9 @@
+ import { Button, Tooltip } from '@fluentui/react-components';
+-import { useAtomValueRawSync } from 'jotai/react';
++import { useAtomValueRawSync, useStore } from 'jotai/react';
+ import { createPortal } from 'react-dom';
+ import { translateAtom } from '../../i18n/locale.ts';
+-import { sceneStateAtom } from '../scene/sceneActions.ts';
++import { forceSceneMode, sceneStateAtom } from '../scene/sceneActions.ts';
++import { flyIntoLyrics } from './coverFlight.ts';
+ import { useControlSlots, useSceneActions } from '../scene/sceneContext.ts';
+ import { useControlKeyClasses } from './controlKeyStyles.ts';
+ import { CoverflowIcon } from './CoverflowIcon.tsx';
+@@ -15,6 +16,7 @@ import { CoverflowIcon } from './CoverflowIcon.tsx';
+ export function CoverflowKey() {
+   const t = useAtomValueRawSync(translateAtom);
+   const actions = useSceneActions();
++  const store = useStore();
+   const on = useAtomValueRawSync(sceneStateAtom).mode === 'coverflow';
+   const keys = useControlKeyClasses();
+   const slots = useControlSlots();
+@@ -28,7 +30,11 @@ export function CoverflowKey() {
+         icon={<CoverflowIcon />}
+         aria-pressed={on}
+         data-coverflow-key
+-        onClick={() => actions.setMode(on ? 'none' : 'coverflow')}
++        onClick={() => {
++          // leaving the coverflow: the middle card flies into the lyrics view's cover, like a double tap
++          if (on && flyIntoLyrics(store, () => forceSceneMode(store, 'none'))) return;
++          actions.setMode(on ? 'none' : 'coverflow');
++        }}
+       />
+     </Tooltip>
+   );
+diff --git a/src/immersive/page/coverFlight.ts b/src/immersive/page/coverFlight.ts
+index 372d910..dae6c54 100644
+--- a/src/immersive/page/coverFlight.ts
++++ b/src/immersive/page/coverFlight.ts
+@@ -30,6 +30,8 @@ import styles from './CoverFlight.module.css';
+ 
+ /** The flight itself */
+ const FLIGHT_MS = 620;
++/** How far into the flight the copy counts as landed (with this curve it has covered ~98% of the way) */
++const LANDED_AT = 0.78;
+ /** A soft start and a long, gentle landing */
+ const FLIGHT_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
+ /** The scene being left fades out this fast under the flying copy */
+@@ -67,6 +69,7 @@ export const coverFlight = {
+ 
+ /** The copy: a square layer that fades into a round one, at the larger of the two sizes so it stays sharp */
+ function buildPlane(
++  from: string | null,
+   url: string | null,
+   size: number,
+   radius: number,
+@@ -81,22 +84,23 @@ function buildPlane(
+   plane.style.width = `${size}px`;
+   plane.style.height = `${size}px`;
+   plane.setAttribute('aria-hidden', 'true');
+-  const layer = (className: string | undefined) => {
++  const layer = (className: string | undefined, src: string | null) => {
+     const element = document.createElement('div');
+     element.className = className ?? '';
+-    if (url) {
++    if (src) {
+       const image = document.createElement('img');
+       image.decoding = 'sync';
+       image.alt = '';
+       image.draggable = false;
+-      image.src = url;
++      image.src = src;
+       element.append(image);
+     }
+     return element;
+   };
+-  const square = layer(styles.square);
++  // the start layer shows the very picture the cover had on screen, the end layer the one it will have
++  const square = layer(styles.square, from ?? url);
+   square.style.borderRadius = `${radius}px`;
+-  const round = layer(styles.round);
++  const round = layer(styles.round, url);
+   round.style.setProperty('--ring', `${ring}px`);
+   const spindle = document.createElement('span');
+   spindle.className = styles.spindle ?? '';
+@@ -108,11 +112,35 @@ function buildPlane(
+ const pose = (rect: Rect, size: number): string =>
+   `translate(${rect.x}px, ${rect.y}px) scale(${rect.size / size})`;
+ 
++/** Where the cover lands, relative to the immersive content's top left corner (unzoomed CSS pixels) */
++export interface LandingBox {
++  readonly left: number;
++  readonly top: number;
++  readonly size: number;
++  /** A record label (round) or a square cover with this corner radius at the landing size */
++  readonly round: boolean;
++  readonly radius?: number;
++}
++
++/** One kind of flight: where it goes and what moves around it */
++export interface FlightPlan {
++  /** Where the cover will be once `update` has run, worked out before it runs; null to not fly */
++  landing(content: HTMLElement): LandingBox | null;
++  /** The part of the view that goes away under the flying cover */
++  leaving(content: HTMLElement): HTMLElement | null;
++  /** Switch views; runs once the copy has landed */
++  update(): void;
++  /** After `update`: the part that comes in around the landed copy */
++  entering(content: HTMLElement): HTMLElement | null;
++  /** After `update`: the real cover the copy stands in for */
++  cover(content: HTMLElement): HTMLElement | null;
++}
++
+ /**
+- * Fly the cover from where it is now into Blueprint, switching scenes with `update` on the way. Returns false
+- * (doing nothing) when there is no cover to fly or no motion wanted; the caller then switches the plain way.
++ * Fly the cover from where it is now to where `plan` says, switching views on landing. Returns false (doing
++ * nothing) when there is no cover to fly or no motion wanted; the caller then switches the plain way.
+  */
+-export function flyIntoBlueprint(store: Store, update: () => void): boolean {
++export function flyCover(store: Store, plan: FlightPlan): boolean {
+   const doc = document;
+   const root = doc.documentElement;
+   const content = doc.querySelector<HTMLElement>('[data-immersive-content]');
+@@ -130,9 +158,10 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+   const area = content.getBoundingClientRect();
+   const start = source.getBoundingClientRect();
+   if (start.width < 1 || content.clientWidth < 1 || content.clientHeight < 1) return false;
+-  // Blueprint lays itself out by the content's own size (a transform on the view, like its entrance zoom,
+-  // doesn't change the tier); the result is then placed where the content shows on screen
+-  const box = paperCoverBox(content.clientWidth, content.clientHeight);
++  const box = plan.landing(content);
++  if (!box || box.size < 1) return false;
++  // the landing is worked out in the content's own pixels (a transform on the view, like its entrance
++  // zoom, doesn't change the layout); it is then placed where the content shows on screen
+   const zoom = area.width / content.clientWidth;
+   let target: Rect = {
+     x: area.left + box.left * zoom,
+@@ -148,10 +177,13 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+     (parseFloat(getComputedStyle(source).borderTopLeftRadius) || 0) * (size / from.size);
+   // the label's ring (2 px dark + 1 px light) as it will look once landed, drawn at the copy's own scale
+   const ring = size / target.size;
+-  const { plane, square, round } = buildPlane(url, size, radius, ring);
++  const shown = source.querySelector('img');
++  const startImage =
++    shown && shown.complete && shown.naturalWidth > 0 ? shown.currentSrc || shown.src : null;
++  const { plane, square, round } = buildPlane(startImage, url, size, radius, ring);
+   if (!box.round) {
+-    // the narrow tier keeps a square cover: the copy stays square, no record label look
+-    round.style.borderRadius = `${radius}px`;
++    // a square cover at the end too: the corners only change from the start's to the end's radius
++    round.style.borderRadius = `${(box.radius ?? 0) * (size / box.size)}px`;
+     round.style.boxShadow = 'none';
+     round.querySelector('span')?.remove();
+   }
+@@ -166,7 +198,7 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+     [{ transform: pose(from, size) }, { transform: pose(target, size) }],
+     timing,
+   );
+-  // the corners round off in the middle of the flight
++  // the corners change shape in the middle of the flight
+   square.animate(
+     [{ opacity: 1 }, { opacity: 1, offset: 0.2 }, { opacity: 0, offset: 0.7 }, { opacity: 0 }],
+     { duration: FLIGHT_MS, fill: 'forwards' },
+@@ -176,40 +208,35 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+     { duration: FLIGHT_MS, fill: 'forwards' },
+   );
+ 
+-  // the scene being left fades out under the copy
+-  const leaving = content.querySelector<HTMLElement>('[data-scene]');
+-  leaving?.animate([{ opacity: 1 }, { opacity: 0 }], {
++  // the view being left fades out under the copy
++  plan.leaving(content)?.animate([{ opacity: 1 }, { opacity: 0 }], {
+     duration: OUT_MS,
+     easing: CURVE.accelerateMid.timing,
+     fill: 'forwards',
+   });
+ 
+-  // Nothing heavy happens while the cover moves: Blueprint mounts only once the copy has landed, so the
+-  // flight never shares the main thread with the mount, whether or not the compositor runs it on its own
++  // Nothing heavy happens while the cover moves: the new view is built only once the copy has landed, so
++  // the flight never shares the main thread with it, whether or not the compositor runs it on its own
+   let done = false;
+   const finish = () => {
+     if (done) return;
+     done = true;
+     delete root.dataset[FLIGHT_ATTRIBUTE];
+     setFlying(false);
+-    // the label shows again (and starts turning): take the copy away once the label's image is on screen,
+-    // never in the same frame
+-    const label = content.querySelector<HTMLElement>('[data-dial-cover] img');
++    // the real cover shows again: take the copy away once its image is on screen, never in the same frame
++    const image = plan.cover(content)?.querySelector('img');
+     const away = () => {
+       requestAnimationFrame(() => {
+         plane.remove();
+         delete root.dataset[TRANSITION_ATTRIBUTE];
+       });
+     };
+-    if (
+-      !(label instanceof HTMLImageElement) ||
+-      (label.complete && !label.hasAttribute('data-loading'))
+-    ) {
++    if (!image || (image.complete && !image.hasAttribute('data-loading'))) {
+       away();
+       return;
+     }
+     const limit = setTimeout(away, IMAGE_WAIT_MS);
+-    label.addEventListener(
++    image.addEventListener(
+       'load',
+       () => {
+         clearTimeout(limit);
+@@ -224,34 +251,33 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+     if (arrived) return;
+     arrived = true;
+     try {
+-      flushSync(update);
++      flushSync(plan.update);
+     } catch {
+-      update();
++      plan.update();
+     }
+-    // Blueprint fades in around the landed copy once its first frame is on screen: started earlier, a
++    // the new view fades in around the landed copy once its first frame is on screen: started earlier, a
+     // heavy first paint would eat into the fade and it would pop in half done
+-    const entering = content.querySelector<HTMLElement>('[data-scene]');
++    const entering = plan.entering(content);
+     if (entering) entering.style.opacity = '0';
+     requestAnimationFrame(() =>
+       requestAnimationFrame(() => {
+-        // worked out right, the label is exactly under the copy; if not, slide the copy onto it
+-        const label = content
+-          .querySelector<HTMLElement>('[data-dial-cover]')
+-          ?.getBoundingClientRect();
+-        if (label && label.width > 0) {
+-          const real: Rect = { x: label.left, y: label.top, size: label.width };
++        // worked out right, the real cover is exactly under the copy; if not, slide the copy onto it
++        const real = plan.cover(content)?.getBoundingClientRect();
++        if (real && real.width > 0) {
++          const there: Rect = { x: real.left, y: real.top, size: real.width };
+           const off = Math.max(
+-            Math.abs(real.x - target.x),
+-            Math.abs(real.y - target.y),
+-            Math.abs(real.size - target.size),
++            Math.abs(there.x - target.x),
++            Math.abs(there.y - target.y),
++            Math.abs(there.size - target.size),
+           );
+           if (off >= 1.5) {
+-            plane.animate([{ transform: pose(target, size) }, { transform: pose(real, size) }], {
++            const now = getComputedStyle(plane).transform;
++            plane.animate([{ transform: now }, { transform: pose(there, size) }], {
+               duration: 200,
+               easing: CURVE.decelerateMid.timing,
+               fill: 'forwards',
+             });
+-            target = real;
++            target = there;
+           }
+         }
+         if (!entering) return finish();
+@@ -265,6 +291,9 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+       }),
+     );
+   };
++  // the new view starts being built when the copy is all but there: the last stretch of the landing moves only
++  // a pixel or two, so nothing shows if that work holds a frame back, and the view comes in a beat sooner
++  setTimeout(arrive, Math.round(FLIGHT_MS * LANDED_AT));
+   flight.finished.then(arrive, arrive);
+   // never leave the copy behind, whatever happens to the page meanwhile
+   setTimeout(arrive, FLIGHT_MS + 400);
+@@ -272,3 +301,59 @@ export function flyIntoBlueprint(store: Store, update: () => void): boolean {
+ 
+   return true;
+ }
++
++/** Lyrics → Blueprint: into the record's label (or the narrow tier's square cover) */
++export function flyIntoBlueprint(store: Store, update: () => void): boolean {
++  return flyCover(store, {
++    landing: (content) => paperCoverBox(content.clientWidth, content.clientHeight),
++    leaving: (content) => content.querySelector<HTMLElement>('[data-scene]'),
++    update,
++    entering: (content) => content.querySelector<HTMLElement>('[data-scene="paper"]'),
++    cover: (content) => content.querySelector<HTMLElement>('[data-dial-cover]'),
++  });
++}
++
++/**
++ * Where the split preset (the lyrics view) puts its cover. The preset is in the page already, hidden while
++ * the coverflow is up, with its measures written on it (`SplitPreset`): the cover column takes 0.45 of the
++ * width (plus the reach into the sidebar), or all of it when centred; the cover sits centred in the column at
++ * the stack's top.
++ */
++/** The split preset's own root; the presets scene's root carries the preset id too */
++const SPLIT = '[data-scene="presets"] [data-preset="split"]';
++
++function splitCoverBox(content: HTMLElement): LandingBox | null {
++  const split = content.querySelector<HTMLElement>(SPLIT);
++  const scene = content.querySelector<HTMLElement>('[data-scene="presets"]');
++  if (!split || !scene) return null;
++  const style = split.style;
++  const width = parseFloat(style.width);
++  const cover = parseFloat(style.getPropertyValue('--split-cover'));
++  const top = parseFloat(style.getPropertyValue('--split-stack-top'));
++  const reach = parseFloat(style.getPropertyValue('--split-reach')) || 0;
++  if (![width, cover, top].every(Number.isFinite)) return null;
++  const scale = Number(/scale\(([\d.]+)\)/.exec(style.transform)?.[1] ?? 1) || 1;
++  const column = split.hasAttribute('data-centered') ? width : width * 0.45 + reach;
++  const contentBox = content.getBoundingClientRect();
++  const sceneBox = scene.getBoundingClientRect();
++  const zoom = contentBox.width / content.clientWidth || 1;
++  return {
++    left: (sceneBox.left - contentBox.left) / zoom + ((column - cover) / 2) * scale,
++    top: (sceneBox.top - contentBox.top) / zoom + top * scale,
++    size: cover * scale,
++    round: false,
++    radius: 12,
++  };
++}
++
++/** Coverflow → Lyrics: from the middle card to the lyrics view's cover */
++export function flyIntoLyrics(store: Store, update: () => void): boolean {
++  return flyCover(store, {
++    landing: splitCoverBox,
++    leaving: (content) => content.querySelector<HTMLElement>('[data-stage="coverflow"]'),
++    update,
++    entering: (content) => content.querySelector<HTMLElement>(SPLIT),
++    cover: (content) =>
++      content.querySelector<HTMLElement>('[data-preset="split"] [data-scene-element="cover"]'),
++  });
++}
+diff --git a/src/immersive/page/viewCycle.ts b/src/immersive/page/viewCycle.ts
+index 172934c..cef6ab3 100644
+--- a/src/immersive/page/viewCycle.ts
++++ b/src/immersive/page/viewCycle.ts
+@@ -6,7 +6,7 @@ import { GLIDE_MS, GLIDE_SPEED, TRANSITION_ATTRIBUTE } from '../scene/sceneTrans
+ import { browserSceneTransition, forceSceneMode, sceneStateAtom } from '../scene/sceneActions.ts';
+ import type { SceneMode } from '../scene/sceneState.ts';
+ import { chooseImmersiveScene, immersiveSceneAtom } from './immersivePrefs.ts';
+-import { flyIntoBlueprint } from './coverFlight.ts';
++import { flyIntoBlueprint, flyIntoLyrics } from './coverFlight.ts';
+ 
+ /**
+  * One-tap view cycle: Blueprint → Coverflow → Lyrics → Blueprint.
+@@ -88,9 +88,10 @@ export function cycleFromLyrics(store: Store): void {
+   if (!flyIntoBlueprint(store, update)) morphSwap(store, update);
+ }
+ 
+-/** Coverflow → Lyrics: stays in the presets scene, so it gets the scene's own glide (covers fly to place) */
++/** Coverflow → Lyrics: the middle card flies into the lyrics view's cover (`coverFlight.ts`) */
+ export function cycleFromCoverflow(store: Store): void {
+-  browserSceneTransition(store)(() => forceSceneMode(store, 'none'));
++  const update = () => forceSceneMode(store, 'none');
++  if (!flyIntoLyrics(store, update)) browserSceneTransition(store)(update);
+ }
+ 
+ /** Step to the next view from wherever the immersive view is now */
+-- 
+2.43.0
+

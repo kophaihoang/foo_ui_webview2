@@ -1,0 +1,129 @@
+/* 两种形态常态贴底，命中区与横向坐标不随显示层的轻抬和加粗改变 */
+.root {
+  position: absolute;
+  z-index: 1;
+  bottom: calc(var(--spacingVerticalXXS) - var(--spacingVerticalS));
+}
+
+.root .hit {
+  position: relative;
+  display: grid;
+  align-content: center;
+  height: 18px;
+  padding: 0;
+}
+
+.display {
+  position: relative;
+  min-width: 0;
+  translate: 0 0;
+  pointer-events: none;
+  transition: translate var(--motion-fast) var(--motion-curve-point-to-point);
+}
+
+.root[data-scrub='on'] .display {
+  translate: 0 calc(-1 * var(--spacingVerticalXS));
+}
+
+.line {
+  transform: scaleY(var(--scrub-scale));
+  transition: transform var(--motion-fast) var(--curveDecelerateMid);
+  pointer-events: none;
+}
+
+.root[data-scrub='on'] .line {
+  transform: scaleY(1);
+}
+
+.hit[aria-disabled] .line {
+  opacity: 0.35;
+}
+
+/* 时间覆盖在轨道上方，不参与宽度分配，也不阻断指针进入和离开命中区 */
+.clocks {
+  position: absolute;
+  right: 0;
+  bottom: calc(50% + var(--spacingVerticalS));
+  left: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacingHorizontalS);
+  color: var(--text-primary);
+  font-size: var(--fontSizeBase100);
+  line-height: var(--lineHeightBase100);
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--motion-fast) var(--curveLinear),
+    visibility var(--motion-fast) var(--curveLinear);
+}
+
+.root[data-scrub='on'] .clocks {
+  opacity: 1;
+  visibility: visible;
+}
+
+.clocks [data-dragging] {
+  color: var(--accent);
+  font-weight: var(--fontWeightSemibold);
+}
+
+.lyrics {
+  position: absolute;
+  bottom: calc(50% + var(--spacingVerticalXS));
+  min-width: 0;
+  font-size: var(--fontSizeBase100);
+  text-align: center;
+  pointer-events: none;
+}
+
+.total:empty {
+  display: none;
+}
+
+.note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marker {
+  position: absolute;
+  top: 50%;
+  width: var(--strokeWidthThick);
+  height: 14px;
+  border-radius: var(--borderRadiusSmall);
+  background: var(--text-primary);
+  translate: -50% -50%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-faster) var(--curveLinear);
+}
+
+.marker[data-visible] {
+  opacity: 1;
+}
+
+/* 鼠标抓取时立即显示位置，反馈不等待悬停淡入 */
+.hit[data-dragging] .marker {
+  opacity: 1;
+  transition: none;
+}
+
+.root[data-form='lcd'] {
+  --scrub-scale: 0.5;
+
+  right: var(--spacingHorizontalM);
+  left: var(--spacingHorizontalM);
+}
+
+/* 胶囊按描边内侧定位，保留封面和圆角处的留白 */
+.root[data-form='capsule'] {
+  --scrub-scale: 0.333333;
+
+  right: calc(var(--spacingHorizontalXXXL) - var(--strokeWidthThin));
+  left: calc(2 * var(--spacingHorizontalS) + 48px - var(--strokeWidthThin));
+}

@@ -1,0 +1,975 @@
+From 15d507fc1b274be695df4d4ed7f0d1f2c02918b7 Mon Sep 17 00:00:00 2001
+From: LVH <kophaileviethoang@gmail.com>
+Date: Sun, 1 Nov 2026 18:23:43 +0000
+Subject: [PATCH 05/16] Vinyl record in Blueprint, terrain off, deferred heavy
+ panels, stable coverflow cards, window drag lock
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/coverflow/dropUpcoming.ts |  9 ++-
+ src/immersive/dial/DialCover.module.css | 35 ++++++++++
+ src/immersive/dial/DialCover.tsx        | 92 ++++++++++++++++++++-----
+ src/immersive/dial/PaperDial.tsx        | 43 +++++++-----
+ src/immersive/dial/StageDial.tsx        | 57 ++++-----------
+ src/immersive/dial/VinylDisc.module.css | 57 +++++++++++++++
+ src/immersive/dial/VinylDisc.tsx        | 26 +++++++
+ src/immersive/page/ImmersiveView.tsx    | 10 +++
+ src/immersive/page/windowDragLock.ts    | 33 +++++++++
+ src/immersive/paper/Deferred.tsx        | 15 ++++
+ src/immersive/paper/PaperScene.tsx      |  5 +-
+ src/immersive/paper/PaperSheet.tsx      | 13 +++-
+ src/immersive/paper/PaperStage.tsx      |  9 ++-
+ src/immersive/scene/coverflowAtoms.ts   |  6 +-
+ src/immersive/scene/coverflowItems.ts   | 64 ++++++++++++++---
+ src/immersive/scene/shufflePlan.ts      | 71 +++++++++++++------
+ 16 files changed, 426 insertions(+), 119 deletions(-)
+ create mode 100644 src/immersive/dial/VinylDisc.module.css
+ create mode 100644 src/immersive/dial/VinylDisc.tsx
+ create mode 100644 src/immersive/page/windowDragLock.ts
+ create mode 100644 src/immersive/paper/Deferred.tsx
+
+diff --git a/src/immersive/coverflow/dropUpcoming.ts b/src/immersive/coverflow/dropUpcoming.ts
+index c5dbbc8..fc0a513 100644
+--- a/src/immersive/coverflow/dropUpcoming.ts
++++ b/src/immersive/coverflow/dropUpcoming.ts
+@@ -51,8 +51,8 @@ export async function dropUpcoming(
+     const headHandle =
+       planHead === undefined
+         ? null
+-        : typeof planHead === 'number'
+-          ? plan.tracks.get(planHead)?.handle
++        : planHead.row !== null
++          ? plan.tracks.get(planHead.row)?.handle
+           : planHead.track.handle;
+     const position =
+       dragged.kind === 'planned'
+@@ -75,7 +75,10 @@ export async function dropUpcoming(
+         (dragged.kind === 'earlier' || dragged.kind === 'upNext') && dragged.guid === plan.guid
+           ? dragged.row
+           : null;
+-      service.insert(row ?? { path: dragged.track.path, track: dragged.track }, planIndex);
++      service.insert(
++        row !== null ? { row } : { row: null, path: dragged.track.path, track: dragged.track },
++        planIndex,
++      );
+       return;
+     }
+   }
+diff --git a/src/immersive/dial/DialCover.module.css b/src/immersive/dial/DialCover.module.css
+index ae5149c..5f729ae 100644
+--- a/src/immersive/dial/DialCover.module.css
++++ b/src/immersive/dial/DialCover.module.css
+@@ -16,3 +16,38 @@
+   height: 100%;
+   object-fit: contain;
+ }
++
++.spinner {
++  position: absolute;
++  inset: 0;
++  display: grid;
++  place-items: center;
++}
++
++/* Blueprint's record: the cover is the round label in the middle of the disc */
++.round {
++  border-radius: 50%;
++  box-shadow:
++    0 0 0 2px rgba(0, 0, 0, 0.55),
++    0 0 0 3px rgba(255, 255, 255, 0.08);
++}
++
++.round .art {
++  object-fit: cover;
++}
++
++/* the spindle hole: stays put while the label turns around it */
++.spindle {
++  position: absolute;
++  left: 50%;
++  top: 50%;
++  width: 4.5%;
++  height: 4.5%;
++  min-width: 8px;
++  min-height: 8px;
++  translate: -50% -50%;
++  border-radius: 50%;
++  background: radial-gradient(circle, #050506 0 45%, #2a2a2e 50% 70%, #0b0b0c 75%);
++  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
++  pointer-events: none;
++}
+diff --git a/src/immersive/dial/DialCover.tsx b/src/immersive/dial/DialCover.tsx
+index 3771c3c..29c8504 100644
+--- a/src/immersive/dial/DialCover.tsx
++++ b/src/immersive/dial/DialCover.tsx
+@@ -1,6 +1,8 @@
+ import { Record48Regular } from '@fluentui/react-icons';
+ import { useAtomValueRawSync, useStore } from 'jotai/react';
+-import type { CSSProperties } from 'react';
++import { atom } from 'jotai/vanilla';
++import { useEffect, useRef, useState, type CSSProperties } from 'react';
++import { playbackAtom } from '../../playback/playback.ts';
+ import { immersiveCoverAtom } from '../../covers/immersiveCover.ts';
+ import { FadeImage } from '../../kit/FadeImage.tsx';
+ import { useViewServices } from '../page/viewServices.ts';
+@@ -14,13 +16,63 @@ export interface DialCoverProps {
+   readonly box: CSSProperties;
+   /** `data-decor-guard` 的外扩，单位像素：生成式网格不在封面周围这么远以内放装饰 */
+   readonly guard: number;
++  /** Blueprint's record: the cover is the round label and turns while music plays */
++  readonly round?: boolean;
++}
++
++const playingAtom = atom((get) => get(playbackAtom).state === 'playing');
++/** One turn of the label, ms: a calm 25 rpm rather than a dizzy 33⅓ */
++const TURN_MS = 2400;
++/** Spin up and run down like a platter, ms */
++const RAMP_MS = 700;
++
++/** Turns `element` while `on`, easing the speed up from rest and back down to rest */
++function useSpin(element: HTMLElement | null, on: boolean): void {
++  const spin = useRef<Animation | null>(null);
++  useEffect(() => {
++    if (!element) return;
++    const animation = element.animate([{ rotate: '0deg' }, { rotate: '360deg' }], {
++      duration: TURN_MS,
++      iterations: Infinity,
++    });
++    animation.pause();
++    spin.current = animation;
++    return () => {
++      animation.cancel();
++      spin.current = null;
++    };
++  }, [element]);
++  useEffect(() => {
++    const animation = spin.current;
++    if (!animation) return;
++    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
++      if (on) animation.play();
++      else animation.pause();
++      return;
++    }
++    const from = animation.playState === 'running' ? animation.playbackRate : 0;
++    const to = on ? 1 : 0;
++    if (on) animation.play();
++    const start = performance.now();
++    let frame = 0;
++    const tick = (now: number) => {
++      const t = Math.min(1, (now - start) / RAMP_MS);
++      const eased = on ? 1 - (1 - t) ** 3 : 1 - t * t;
++      const rate = on ? from + (to - from) * eased : from * eased;
++      animation.updatePlaybackRate(Math.max(rate, on ? 0.02 : 0));
++      if (t < 1) frame = requestAnimationFrame(tick);
++      else if (!on) animation.pause();
++    };
++    frame = requestAnimationFrame(tick);
++    return () => cancelAnimationFrame(frame);
++  }, [on, element]);
+ }
+ 
+ /**
+  * 罗盘里的封面：占位盘片一直垫在下面，图叠在上面；地址可用不等于图存在或能解码。封面状态与背景的封面底色
+  * 共用同一份，解码结果由这里的 `<img>` 回报
+  */
+-export function DialCover({ box, guard }: DialCoverProps) {
++export function DialCover({ box, guard, round = false }: DialCoverProps) {
+   const cover = useAtomValueRawSync(immersiveCoverAtom);
+   const services = useViewServices();
+   const store = useStore();
+@@ -28,29 +80,35 @@ export function DialCover({ box, guard }: DialCoverProps) {
+   const holder = useCoverHolder(SCENE_COVER_LAYER);
+   const url = cover.status === 'missing' ? null : cover.url;
+   const { token } = cover;
++  const playing = useAtomValueRawSync(playingAtom);
++  const [spinner, setSpinner] = useState<HTMLDivElement | null>(null);
++  useSpin(round ? spinner : null, round && playing);
+   return (
+     <div
+       ref={holder}
+-      className={styles.cover}
++      className={round ? `${styles.cover} ${styles.round}` : styles.cover}
+       style={box}
+       data-decor-guard={guard}
+       data-dial-cover
+-      // one-tap view cycle: Blueprint → Lyrics
++      // one-tap view cycle: Blueprint → Coverflow
+       onClick={() => cycleFromBlueprint(store)}
+     >
+-      <Record48Regular />
+-      {/* 按身份换元素：上一张图晚到的 load / error 带的是旧身份，进不了当前这一张。 */}
+-      {url && (
+-        <FadeImage
+-          key={token}
+-          className={styles.art}
+-          src={url}
+-          alt=""
+-          draggable={false}
+-          onLoad={() => services.cover?.markLoaded(token)}
+-          onError={() => services.cover?.markFailed(token)}
+-        />
+-      )}
++      <div ref={setSpinner} className={styles.spinner}>
++        <Record48Regular />
++        {/* 按身份换元素：上一张图晚到的 load / error 带的是旧身份，进不了当前这一张。 */}
++        {url && (
++          <FadeImage
++            key={token}
++            className={styles.art}
++            src={url}
++            alt=""
++            draggable={false}
++            onLoad={() => services.cover?.markLoaded(token)}
++            onError={() => services.cover?.markFailed(token)}
++          />
++        )}
++      </div>
++      {round && <span className={styles.spindle} aria-hidden />}
+     </div>
+   );
+ }
+diff --git a/src/immersive/dial/PaperDial.tsx b/src/immersive/dial/PaperDial.tsx
+index 6da1d9c..10bc27a 100644
+--- a/src/immersive/dial/PaperDial.tsx
++++ b/src/immersive/dial/PaperDial.tsx
+@@ -7,7 +7,7 @@ import { COMPACT_SCALE, type DialPlacement } from '../paper/paperTiers.ts';
+ import { DialCover } from './DialCover.tsx';
+ import { PaperBrackets } from './PaperBrackets.tsx';
+ import styles from './PaperDial.module.css';
+-import { PaperOrbit } from './PaperOrbit.tsx';
++import { VinylDisc } from './VinylDisc.tsx';
+ import { PaperTransport } from './PaperTransport.tsx';
+ 
+ /** 原尺寸下的环半径；圆心与封面边长同 `paperLayout.ts` 的 `DIAL_CENTER`、`COVER_SIZE` */
+@@ -38,6 +38,9 @@ const NARROW = {
+ /** 四角括号在封面外扩 8 处，每个角的臂长 14（含线宽） */
+ const BRACKET_OUTSET = 8;
+ const BRACKET_ARM = 14;
++/** The record in the dial, at the original size: disc diameter and label (cover) diameter */
++const VINYL = 384;
++const LABEL = 224;
+ 
+ interface Positioned {
+   readonly text: string;
+@@ -126,28 +129,32 @@ export function PaperDial({ dial, column }: PaperDialProps) {
+     top: top - BRACKET_OUTSET,
+     size: size + 2 * BRACKET_OUTSET,
+   };
++  // with room for the dial, the cover becomes the label of a record; the narrow row keeps the square cover
++  const record = dial
++    ? { x: dial.x, y: dial.y, size: VINYL * dial.scale, label: LABEL * dial.scale }
++    : null;
++  const labelBox: CSSProperties | null = record
++    ? {
++        left: record.x - record.label / 2,
++        top: record.y - record.label / 2,
++        width: record.label,
++        height: record.label,
++      }
++    : null;
+   return (
+     <div className={dial ? styles.dial : `${styles.dial} ${styles.narrow}`}>
+-      {layout.rings.map((ring) => (
+-        <span
+-          key={ring.radius}
+-          className={styles.ring}
+-          style={ring.style}
+-          data-dial-ring
+-          aria-hidden
+-        />
+-      ))}
+-      {dial && <PaperOrbit center={dial} scale={dial.scale} />}
+-      {layout.ticks.map((tick) => (
+-        <span key={tick.text} className={styles.tick} style={tick.style} aria-hidden>
+-          {tick.text}
+-        </span>
+-      ))}
++      {record && <VinylDisc x={record.x} y={record.y} size={record.size} />}
+       <div className={`${styles.text} ${styles.album}`} style={layout.album} data-field="dialAlbum">
+         {track?.album ?? ''}
+       </div>
+-      <DialCover box={coverBox} guard={47} />
+-      <PaperBrackets box={bracketBox} arm={BRACKET_ARM} />
++      {labelBox ? (
++        <DialCover box={labelBox} guard={47} round />
++      ) : (
++        <>
++          <DialCover box={coverBox} guard={47} />
++          <PaperBrackets box={bracketBox} arm={BRACKET_ARM} />
++        </>
++      )}
+       <div className={styles.text} style={layout.trackNo} data-field="trackNo">
+         {formatTrackNo(track?.trackNumber)}
+       </div>
+diff --git a/src/immersive/dial/StageDial.tsx b/src/immersive/dial/StageDial.tsx
+index 1f23250..0420383 100644
+--- a/src/immersive/dial/StageDial.tsx
++++ b/src/immersive/dial/StageDial.tsx
+@@ -4,34 +4,28 @@ import { currentTrackAtom } from '../../playback/playback.ts';
+ import { MISSING, formatTagDate, formatTrackPosition } from '../paper/paperScale.ts';
+ import {
+   STAGE_COVER,
+-  STAGE_DIAL,
+-  STAGE_ORBIT,
+-  STAGE_RINGS,
+-  STAGE_TICKS,
+   STAGE_TRANSPORT,
+ } from '../paper/paperStage.ts';
+ import { trackExtrasAtom } from '../fields/trackExtras.ts';
+ import { DialCover } from './DialCover.tsx';
+-import { PaperBrackets } from './PaperBrackets.tsx';
+-import { PaperOrbit } from './PaperOrbit.tsx';
++import { VinylDisc } from './VinylDisc.tsx';
+ import { PaperTransport } from './PaperTransport.tsx';
+ import styles from './StageDial.module.css';
+ 
+-/** 括号线宽；拐点压在封面四角，线落在封面外侧，所以括号框比封面各边外扩一个线宽 */
+-const BRACKET_STROKE = 2;
+-const BRACKET_BOX = {
+-  left: STAGE_COVER.x - BRACKET_STROKE,
+-  top: STAGE_COVER.y - BRACKET_STROKE,
+-  size: STAGE_COVER.size + 2 * BRACKET_STROKE,
++/** The record on the stage: centred where the cover was, sized to clear the album name and the cells */
++const RECORD = {
++  x: STAGE_COVER.x + STAGE_COVER.size / 2,
++  y: STAGE_COVER.y + STAGE_COVER.size / 2 + 4,
++  size: 540,
++  label: 320,
++} as const;
++const LABEL_BOX: CSSProperties = {
++  left: RECORD.x - RECORD.label / 2,
++  top: RECORD.y - RECORD.label / 2,
++  width: RECORD.label,
++  height: RECORD.label,
+ };
+-const BRACKET_ARM = STAGE_COVER.bracket + BRACKET_STROKE;
+ 
+-const COVER_BOX: CSSProperties = {
+-  left: STAGE_COVER.x,
+-  top: STAGE_COVER.y,
+-  width: STAGE_COVER.size,
+-  height: STAGE_COVER.size,
+-};
+ 
+ const [FIRST_KEY, , LAST_KEY] = STAGE_TRANSPORT.centers;
+ const TRANSPORT_SIZE = {
+@@ -44,17 +38,10 @@ const TRANSPORT_BOX: CSSProperties = {
+   top: STAGE_TRANSPORT.y - STAGE_TRANSPORT.play / 2,
+ };
+ 
+-const TICK_CLASS = `${styles.base} ${styles.tick}`;
+-const HOT_TICK_CLASS = `${TICK_CLASS} ${styles['hot-tick']}`;
+ const CELL_KEY_CLASS = `${styles.base} ${styles['cell-key']}`;
+ const CELL_VALUE_CLASS = `${styles.base} ${styles['cell-value']}`;
+ const MISSING_VALUE_CLASS = `${CELL_VALUE_CLASS} ${styles.missing}`;
+ 
+-/** 以环心为圆心、直径是两倍半径的方框；样式里再用 `translate` 拉回中心 */
+-function ringBox(radius: number): CSSProperties {
+-  return { left: STAGE_DIAL.x, top: STAGE_DIAL.y, width: radius * 2, height: radius * 2 };
+-}
+-
+ /**
+  * full 档舞台的左区：三圈实线环、转动层（`PaperOrbit`，压在实线环之上、刻度字与封面之下）、刻度字、
+  * 封面上方的专辑名、封面与四角括号、封面下三格
+@@ -83,25 +70,11 @@ export function StageDial() {
+   ];
+   return (
+     <div className={styles.dial}>
+-      {STAGE_RINGS.map((radius) => (
+-        <span key={radius} className={styles.ring} style={ringBox(radius)} aria-hidden />
+-      ))}
+-      <PaperOrbit center={STAGE_DIAL} scale={1} spec={STAGE_ORBIT} />
+-      {STAGE_TICKS.map((tick) => (
+-        <span
+-          key={tick.text}
+-          className={tick.hot ? HOT_TICK_CLASS : TICK_CLASS}
+-          style={{ left: tick.x, top: tick.base }}
+-          aria-hidden
+-        >
+-          {tick.text}
+-        </span>
+-      ))}
++      <VinylDisc x={RECORD.x} y={RECORD.y} size={RECORD.size} />
+       <div className={`${styles.base} ${styles.album}`} data-field="dialAlbum">
+         {track?.album ?? ''}
+       </div>
+-      <DialCover box={COVER_BOX} guard={72} />
+-      <PaperBrackets box={BRACKET_BOX} arm={BRACKET_ARM} />
++      <DialCover box={LABEL_BOX} guard={72} round />
+       <dl className={styles.cells} data-decor-guard="24">
+         {cells.map((cell) => (
+           <div key={cell.id} className={styles.cell}>
+diff --git a/src/immersive/dial/VinylDisc.module.css b/src/immersive/dial/VinylDisc.module.css
+new file mode 100644
+index 0000000..dd8c7fe
+--- /dev/null
++++ b/src/immersive/dial/VinylDisc.module.css
+@@ -0,0 +1,57 @@
++.disc {
++  position: absolute;
++  border-radius: 50%;
++  background:
++    /* track gaps: a few slightly lighter, smoother bands between the songs */
++    radial-gradient(
++      circle,
++      transparent 0 44%,
++      rgba(255, 255, 255, 0.05) 44.3% 44.9%,
++      transparent 45.2% 59%,
++      rgba(255, 255, 255, 0.05) 59.3% 59.9%,
++      transparent 60.2% 75%,
++      rgba(255, 255, 255, 0.05) 75.3% 75.9%,
++      transparent 76.2%
++    ),
++    /* fine grooves */
++    repeating-radial-gradient(circle, #121214 0 1px, #19191c 1px 2px, #0c0c0e 2px 3px),
++    #101012;
++  box-shadow:
++    0 24px 60px rgba(0, 0, 0, 0.5),
++    0 0 0 1px rgba(255, 255, 255, 0.06),
++    inset 0 0 0 6px #0a0a0b,
++    inset 0 0 0 7px rgba(255, 255, 255, 0.07);
++  animation: disc-in 620ms cubic-bezier(0.1, 0.9, 0.2, 1) both;
++  pointer-events: none;
++}
++
++/* light catching the grooves: two opposite glints, the way a lamp shows on a real record */
++.sheen {
++  position: absolute;
++  inset: 0;
++  border-radius: 50%;
++  background: conic-gradient(
++    from 20deg,
++    transparent 0deg,
++    rgba(255, 255, 255, 0.13) 22deg,
++    transparent 48deg,
++    transparent 180deg,
++    rgba(255, 255, 255, 0.1) 202deg,
++    transparent 228deg,
++    transparent 360deg
++  );
++  mix-blend-mode: screen;
++}
++
++@keyframes disc-in {
++  from {
++    opacity: 0;
++    transform: scale(0.55);
++  }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .disc {
++    animation: none;
++  }
++}
+diff --git a/src/immersive/dial/VinylDisc.tsx b/src/immersive/dial/VinylDisc.tsx
+new file mode 100644
+index 0000000..5f89f22
+--- /dev/null
++++ b/src/immersive/dial/VinylDisc.tsx
+@@ -0,0 +1,26 @@
++import styles from './VinylDisc.module.css';
++
++export interface VinylDiscProps {
++  /** Centre of the disc, in the layer's coordinates */
++  readonly x: number;
++  readonly y: number;
++  /** Diameter */
++  readonly size: number;
++}
++
++/**
++ * A vinyl record drawn in CSS: grooves, a few track gaps, a soft light sheen and a rim. The cover sits on it
++ * as the round label (`DialCover` with `round`) and is what visibly turns; the grooves are symmetric, so the
++ * disc itself needs no motion. It grows in from behind the label when Blueprint opens.
++ */
++export function VinylDisc({ x, y, size }: VinylDiscProps) {
++  return (
++    <div
++      className={styles.disc}
++      style={{ left: x - size / 2, top: y - size / 2, width: size, height: size }}
++      aria-hidden
++    >
++      <span className={styles.sheen} />
++    </div>
++  );
++}
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index cfc8c30..551954a 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -24,6 +24,7 @@ import type { ImmersiveScene } from './immersivePrefs.ts';
+ import { PresetsScene } from './PresetsScene.tsx';
+ import styles from './ImmersiveView.module.css';
+ import { startShufflePlan } from '../scene/shufflePlan.ts';
++import { lockWindowDrag } from './windowDragLock.ts';
+ import { cycleNext, isCycleTarget } from './viewCycle.ts';
+ 
+ export interface ImmersiveViewProps {
+@@ -80,6 +81,9 @@ function useViewMotion(root: RefObject<HTMLElement | null>, current: boolean): b
+  * 挂上时把焦点收进来，离开时还给进来前拿着焦点的那个元素；Tab 只在这一层里转，不落到底下被盖住的键上
+  * 离开后的退场过渡里整层不接指针与焦点
+  */
++/** Height of the strip along the top that moves the window (`.drag` in ImmersiveView.module.css) */
++const DRAG_STRIP_PX = 48;
++
+ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+   const t = useAtomValueRawSync(translateAtom);
+   const store = useStore();
+@@ -108,6 +112,12 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+     return attachImmersiveRoot(element);
+   }, [current]);
+ 
++  // dragging a cover or the playhead must not drag the window: only the strip along the top moves it
++  useEffect(() => {
++    if (!current) return;
++    return lockWindowDrag(DRAG_STRIP_PX);
++  }, [current]);
++
+   // shuffle plan: deal the upcoming songs ahead while the view is up (random playback order only)
+   useEffect(() => {
+     if (!current) return;
+diff --git a/src/immersive/page/windowDragLock.ts b/src/immersive/page/windowDragLock.ts
+new file mode 100644
+index 0000000..cfe974a
+--- /dev/null
++++ b/src/immersive/page/windowDragLock.ts
+@@ -0,0 +1,33 @@
++import { fb } from 'foo-webview-sdk/bridge';
++import { settle } from '../../host/hostCall.ts';
++
++/**
++ * Keeps the window from being dragged anywhere below the top `strip` pixels while the immersive view is up.
++ *
++ * The host can treat parts of the page as window caption (a title-bar fallback, registered drag regions) and
++ * still hand the mouse to the page, so a drag that the page handles (moving a cover, scrubbing the waveform)
++ * also moved the window. A no-drag region over everything below the strip wins over those; it follows the
++ * window size and is taken away when the view closes. Returns the undo.
++ */
++export function lockWindowDrag(strip: number): () => void {
++  let disposed = false;
++  let frame = 0;
++  const apply = () => {
++    if (disposed) return;
++    const width = window.innerWidth;
++    const height = Math.max(0, window.innerHeight - strip);
++    void settle(() => fb.ui.setNoDragRegions([{ x: 0, y: strip, width, height }]));
++  };
++  const onResize = () => {
++    cancelAnimationFrame(frame);
++    frame = requestAnimationFrame(apply);
++  };
++  apply();
++  window.addEventListener('resize', onResize);
++  return () => {
++    disposed = true;
++    cancelAnimationFrame(frame);
++    window.removeEventListener('resize', onResize);
++    void settle(() => fb.ui.clearNoDragRegions());
++  };
++}
+diff --git a/src/immersive/paper/Deferred.tsx b/src/immersive/paper/Deferred.tsx
+new file mode 100644
+index 0000000..498af44
+--- /dev/null
++++ b/src/immersive/paper/Deferred.tsx
+@@ -0,0 +1,15 @@
++import { useEffect, useState, type ReactNode } from 'react';
++
++/**
++ * Mounts its children a moment after it mounts itself. Switching to Blueprint glides the cover across in a
++ * view transition; the heavy live panels (spectrum, waveform) start once the glide is done, so the switch
++ * doesn't stall on them.
++ */
++export function Deferred({ delay = 560, children }: { delay?: number; children: ReactNode }) {
++  const [ready, setReady] = useState(false);
++  useEffect(() => {
++    const timer = setTimeout(() => setReady(true), delay);
++    return () => clearTimeout(timer);
++  }, [delay]);
++  return ready ? children : null;
++}
+diff --git a/src/immersive/paper/PaperScene.tsx b/src/immersive/paper/PaperScene.tsx
+index 463c475..3df3a36 100644
+--- a/src/immersive/paper/PaperScene.tsx
++++ b/src/immersive/paper/PaperScene.tsx
+@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from 'react';
+ import { colorSchemeAtom } from '../../theme/colorScheme.ts';
+ import { PaperDecor } from '../decor/PaperDecor.tsx';
+ import { useDecorGuards } from '../decor/useDecorGuards.ts';
+-import { immersiveTerrainAtom, immersiveWashAtom } from '../page/immersivePrefs.ts';
++import { immersiveWashAtom } from '../page/immersivePrefs.ts';
+ import { ALPHA_FAR } from '../terrain/terrain.ts';
+ import { TerrainCanvas } from '../terrain/TerrainCanvas.tsx';
+ import { TerrainRuler } from '../terrain/TerrainRuler.tsx';
+@@ -37,7 +37,8 @@ export function PaperScene() {
+   const { width, height } = useSceneSize(root);
+   const dark = useAtomValueRawSync(colorSchemeAtom) === 'dark';
+   const wash = useAtomValueRawSync(immersiveWashAtom) !== 'off';
+-  const terrain = useAtomValueRawSync(immersiveTerrainAtom);
++  // the ridge lines behind Blueprint are off: they redraw the whole window all the time and made the view heavy
++  const terrain = false;
+   const geometry = useMemo(() => paperGeometry(width, height), [width, height]);
+   const { tier, origin, scale } = geometry;
+   const stage = tier === 'full';
+diff --git a/src/immersive/paper/PaperSheet.tsx b/src/immersive/paper/PaperSheet.tsx
+index ffaa988..94872f2 100644
+--- a/src/immersive/paper/PaperSheet.tsx
++++ b/src/immersive/paper/PaperSheet.tsx
+@@ -6,6 +6,7 @@ import { PaperSpectrum } from '../spectrum/PaperSpectrum.tsx';
+ import { PaperStereo } from '../stereo/PaperStereo.tsx';
+ import { PaperWaveform } from '../waveform/PaperWaveform.tsx';
+ import { PaperMarks } from './PaperMarks.tsx';
++import { Deferred } from './Deferred.tsx';
+ import styles from './PaperSheet.module.css';
+ import type { PaperGeometry } from './paperTiers.ts';
+ 
+@@ -34,8 +35,16 @@ export function PaperSheet({ geometry }: PaperSheetProps) {
+         height={sheet.height - fields.y}
+         slots={{
+           stereo: <PaperStereo />,
+-          spectrum: <PaperSpectrum />,
+-          waveform: <PaperWaveform />,
++          spectrum: (
++            <Deferred>
++              <PaperSpectrum />
++            </Deferred>
++          ),
++          waveform: (
++            <Deferred>
++              <PaperWaveform />
++            </Deferred>
++          ),
+           gauges: <PaperGauges />,
+           lyrics: <LyricLog />,
+         }}
+diff --git a/src/immersive/paper/PaperStage.tsx b/src/immersive/paper/PaperStage.tsx
+index 932ba75..d2d62db 100644
+--- a/src/immersive/paper/PaperStage.tsx
++++ b/src/immersive/paper/PaperStage.tsx
+@@ -9,6 +9,7 @@ import { StageStereo } from '../stereo/StageStereo.tsx';
+ import { PaperWaveform } from '../waveform/PaperWaveform.tsx';
+ import { STAGE_CROSSES, STAGE_HEIGHT, STAGE_PAD, STAGE_WIDTH } from './paperStage.ts';
+ import { PaperMarks } from './PaperMarks.tsx';
++import { Deferred } from './Deferred.tsx';
+ import styles from './PaperStage.module.css';
+ import { StageScaleContext } from './stageScale.ts';
+ 
+@@ -41,10 +42,14 @@ export function PaperStage({ scale, origin }: PaperStageProps) {
+         <StageDial />
+         <StageFields stereo={<StageStereo />} />
+         <div className={`${styles.slot} ${styles.spectrum}`}>
+-          <PaperSpectrum />
++          <Deferred>
++            <PaperSpectrum />
++          </Deferred>
+         </div>
+         <div className={`${styles.slot} ${styles.waveform}`}>
+-          <PaperWaveform />
++          <Deferred>
++            <PaperWaveform />
++          </Deferred>
+         </div>
+         <div className={`${styles.slot} ${styles.gauges}`}>
+           <PaperGauges />
+diff --git a/src/immersive/scene/coverflowAtoms.ts b/src/immersive/scene/coverflowAtoms.ts
+index 1d7333d..6cab559 100644
+--- a/src/immersive/scene/coverflowAtoms.ts
++++ b/src/immersive/scene/coverflowAtoms.ts
+@@ -5,7 +5,7 @@ import { queueReviewAtom } from '../../playback/queue/review/queueReview.ts';
+ import { upEarlierAtom, upNextAtom } from '../../playback/queue/upNext.ts';
+ import { coverflowItems, selectedIndexOf, type CoverflowItem } from './coverflowItems.ts';
+ import { sceneStateAtom } from './sceneActions.ts';
+-import { plannedRowsAtom, shufflePlanAtom } from './shufflePlan.ts';
++import { planHistoryAtom, plannedRowsAtom, shufflePlanAtom } from './shufflePlan.ts';
+ 
+ /** 封面流条目序列衍生原子；聚合历史/上下文前向曲目、当前曲目、插队队列及后续曲目，各段变更时自动重排 */
+ export const coverflowItemsAtom: Atom<CoverflowItem[]> = atom((get) =>
+@@ -17,7 +17,9 @@ export const coverflowItemsAtom: Atom<CoverflowItem[]> = atom((get) =>
+     upNext: get(upNextAtom),
+     planned: (() => {
+       const plan = get(shufflePlanAtom);
+-      return plan ? { guid: plan.guid, rows: get(plannedRowsAtom) } : null;
++      return plan
++        ? { guid: plan.guid, rows: get(plannedRowsAtom), history: get(planHistoryAtom) }
++        : null;
+     })(),
+   }),
+ );
+diff --git a/src/immersive/scene/coverflowItems.ts b/src/immersive/scene/coverflowItems.ts
+index c466711..6d34da8 100644
+--- a/src/immersive/scene/coverflowItems.ts
++++ b/src/immersive/scene/coverflowItems.ts
+@@ -82,10 +82,42 @@ export interface CoverflowSources {
+   /** Shuffle plan rows, used when there is no list order to follow */
+   readonly planned?: {
+     readonly guid: string;
+-    readonly rows: readonly { row: number | null; track: UpNextTrack; position: number }[];
++    readonly rows: readonly {
++      id: number;
++      row: number | null;
++      track: UpNextTrack;
++      position: number;
++    }[];
++    /** Songs the plan played last, newest first */
++    readonly history: readonly { id: number; handle: string }[];
+   } | null;
+ }
+ 
++/**
++ * How the playing song sits in the shuffle plan. Right after a song change the plan may not have caught up
++ * yet: the new song is still its first upcoming row (`early`). Either way the playing card keeps the key it had
++ * while it was coming up, and the songs before it keep theirs as they move left.
++ */
++function planView(sources: CoverflowSources) {
++  const planned = !sources.upNext.list ? sources.planned : null;
++  if (!planned) return null;
++  const handle = sources.current?.handle;
++  const head = planned.rows[0];
++  const early = head !== undefined && handle !== undefined && head.track.handle === handle;
++  const last = planned.history[0];
++  const currentKey = early
++    ? `plan:${head.id}`
++    : last && handle === last.handle
++      ? `plan:${last.id}`
++      : null;
++  return {
++    currentKey,
++    upcoming: early ? planned.rows.slice(1) : planned.rows,
++    /** the plan's songs before the playing one, newest first */
++    played: early ? planned.history : planned.history.slice(1),
++  };
++}
++
+ export function currentKeyOf(track: UpNextTrack | null): string {
+   return `current:${trackKeyOf(track)}`;
+ }
+@@ -125,17 +157,34 @@ export function coverflowItems(sources: CoverflowSources): CoverflowItem[] {
+       });
+     }
+   } else {
+-    for (const row of sources.review) {
+-      items.push({ key: `played:${row.key}`, kind: 'played', track: row.track });
++    // with the shuffle plan running, the songs it played keep the card they had on the right, so a song
++    // change slides the whole row by one instead of swapping cards
++    const history = planView(sources)?.played ?? [];
++    const keys = new Map<number, string>();
++    for (let i = sources.review.length - 1, j = 0; i >= 0 && j < history.length; i--, j++) {
++      const entry = history[j];
++      if (!entry || sources.review[i]?.track.handle !== entry.handle) break;
++      keys.set(i, `plan:${entry.id}`);
+     }
++    sources.review.forEach((row, i) => {
++      items.push({ key: keys.get(i) ?? `played:${row.key}`, kind: 'played', track: row.track });
++    });
+   }
+   // 正在播放的是列表里的一行时，它的行号就是前面有几首（之前的曲目的总数），键与它做「接下来」时的键相同
+   const key =
+     earlierList && sources.current
+       ? listKeyOf(`${earlierList.guid}:${earlierTotal}:${sources.current.handle}`)
+-      : currentKeyOf(sources.current);
++      : (planView(sources)?.currentKey ?? currentKeyOf(sources.current));
+   items.push({ key, kind: 'current', track: sources.current });
++  // the plan's next song sits in the queue too; it is shown once, as the plan's card
++  const plan = planView(sources);
++  const planHead = plan?.upcoming[0];
++  let headSkipped = false;
+   for (const entry of sources.queue) {
++    if (planHead && !headSkipped && entry.track.handle === planHead.track.handle) {
++      headSkipped = true;
++      continue;
++    }
+     items.push({
+       key: `queued:${entry.key}`,
+       kind: 'queued',
+@@ -146,12 +195,9 @@ export function coverflowItems(sources: CoverflowSources): CoverflowItem[] {
+   const { list, rows } = sources.upNext;
+   const planned = sources.planned;
+   if (!list && planned) {
+-    // the plan's next song is already in the queue above; don't show it twice
+-    const inQueue = new Set(sources.queue.map((entry) => entry.track.handle));
+-    planned.rows.forEach((row, i) => {
+-      if (i === 0 && inQueue.has(row.track.handle)) return;
++    (plan?.upcoming ?? []).forEach((row) => {
+       items.push({
+-        key: `plan:${row.position}:${row.row}`,
++        key: `plan:${row.id}`,
+         kind: 'planned',
+         track: row.track,
+         guid: planned.guid,
+diff --git a/src/immersive/scene/shufflePlan.ts b/src/immersive/scene/shufflePlan.ts
+index 0e1c8f1..4cbf8be 100644
+--- a/src/immersive/scene/shufflePlan.ts
++++ b/src/immersive/scene/shufflePlan.ts
+@@ -21,7 +21,20 @@ const RANDOM_ORDERS = new Set(['random', 'shuffle-tracks', 'shuffle-albums', 'sh
+ /** At most this many rows per metadata read */
+ const READ_BATCH = 120;
+ 
+-export type PlanEntry = number | { readonly path: string; readonly track: UpNextTrack };
++/**
++ * One song in the plan. `id` is its identity for as long as it is in the plan (its coverflow card keeps it
++ * from far right to the middle, so reorders and song changes slide cards instead of swapping them)
++ */
++export type PlanEntry =
++  | { readonly id: number; readonly row: number }
++  | { readonly id: number; readonly row: null; readonly path: string; readonly track: UpNextTrack };
++/** A song to put into the plan; it gets its id there */
++export type NewPlanEntry =
++  | { readonly row: number }
++  | { readonly row: null; readonly path: string; readonly track: UpNextTrack };
++
++let nextId = 1;
++const withId = (entry: NewPlanEntry): PlanEntry => ({ ...entry, id: nextId++ }) as PlanEntry;
+ 
+ export interface ShufflePlan {
+   readonly guid: string;
+@@ -35,6 +48,7 @@ export interface ShufflePlan {
+ }
+ 
+ export interface PlannedRow {
++  readonly id: number;
+   /** Playlist row; null for a song kept by path */
+   readonly row: number | null;
+   readonly track: UpNextTrack;
+@@ -46,7 +60,21 @@ const planAtom = atom<ShufflePlan | null>(null);
+ export const shufflePlanAtom: Atom<ShufflePlan | null> = atom((get) => get(planAtom));
+ 
+ const trackAt = (plan: ShufflePlan, entry: PlanEntry | undefined): UpNextTrack | undefined =>
+-  entry === undefined ? undefined : typeof entry === 'number' ? plan.tracks.get(entry) : entry.track;
++  entry === undefined ? undefined : entry.row !== null ? plan.tracks.get(entry.row) : entry.track;
++
++/** The last songs the plan played, newest first, so the coverflow can keep their cards as they move left */
++export const planHistoryAtom: Atom<readonly { id: number; handle: string }[]> = atom((get) => {
++  const plan = get(planAtom);
++  if (!plan) return [];
++  const done: { id: number; handle: string }[] = [];
++  for (let position = plan.cursor - 1; position >= 0 && done.length < 12; position--) {
++    const entry = plan.order[position];
++    const track = trackAt(plan, entry);
++    if (!entry || !track) break;
++    done.push({ id: entry.id, handle: track.handle });
++  }
++  return done;
++});
+ 
+ /** The upcoming songs whose metadata is in, from the next one on, stopping at the first gap */
+ export const plannedRowsAtom: Atom<readonly PlannedRow[]> = atom((get) => {
+@@ -57,27 +85,27 @@ export const plannedRowsAtom: Atom<readonly PlannedRow[]> = atom((get) => {
+     const entry = plan.order[position];
+     const track = trackAt(plan, entry);
+     if (entry === undefined || !track) break;
+-    rows.push({ row: typeof entry === 'number' ? entry : null, track, position });
++    rows.push({ id: entry.id, row: entry.row, track, position });
+   }
+   return rows;
+ });
+ 
+-function deal(count: number, avoidFirst: readonly PlanEntry[]): number[] {
++function deal(count: number, avoidFirst: readonly PlanEntry[]): PlanEntry[] {
+   const rows = Array.from({ length: count }, (_, row) => row);
+   for (let i = rows.length - 1; i > 0; i--) {
+     const j = Math.floor(Math.random() * (i + 1));
+     [rows[i], rows[j]] = [rows[j] as number, rows[i] as number];
+   }
+   // don't start a new deal with a song that has just played
+-  const recent = new Set(avoidFirst.filter((entry) => typeof entry === 'number'));
++  const recent = new Set(avoidFirst.map((entry) => entry.row));
+   for (let i = 0; i < Math.min(rows.length, 8) && recent.has(rows[0] as number); i++) {
+     rows.push(rows.shift() as number);
+   }
+-  return rows;
++  return rows.map((row) => withId({ row }));
+ }
+ 
+ const keyOf = (entry: PlanEntry): string =>
+-  typeof entry === 'number' ? `row:${entry}` : `path:${entry.path}`;
++  entry.row !== null ? `row:${entry.row}` : `path:${entry.path}`;
+ 
+ export interface ShufflePlanService {
+   /** Make sure metadata is in for the next `ahead` songs, dealing more of the deck when needed */
+@@ -87,7 +115,7 @@ export interface ShufflePlanService {
+   /** Move the planned song at `position` so it plays `index`-th from now (0 = next) */
+   move(position: number, index: number): void;
+   /** Put a song into the plan so it plays `index`-th from now (0 = next) */
+-  insert(entry: PlanEntry, index: number): void;
++  insert(entry: NewPlanEntry, index: number): void;
+   dispose(): void;
+ }
+ 
+@@ -117,9 +145,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+   async function fresh(guid: string, playingRow: number | null): Promise<ShufflePlan | null> {
+     const counted = await settle(() => fb.playlist.getCount(guid));
+     if (!counted?.success || counted.count < 2) return null;
+-    const order = deal(counted.count, playingRow === null ? [] : [playingRow]).filter(
+-      (row) => row !== playingRow,
+-    );
++    const order = deal(counted.count, []).filter((entry) => entry.row !== playingRow);
+     return { guid, count: counted.count, order, cursor: 0, tracks: new Map() };
+   }
+ 
+@@ -169,8 +195,8 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     // detour; the plan waits where it is and its next song stays queued
+     const isPlaying = (entry: PlanEntry | undefined): boolean =>
+       entry !== undefined &&
+-      (typeof entry === 'number'
+-        ? playing.playlistGuid === plan!.guid && playingRow === entry
++      (entry.row !== null
++        ? playing.playlistGuid === plan!.guid && playingRow === entry.row
+         : entry.track.handle === current.handle || entry.path === current.path);
+     if (jump && isPlaying(plan.order[jump.position])) {
+       plan = { ...plan, cursor: jump.position + 1 };
+@@ -199,13 +225,13 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     }
+     if (entries.length > 0) return;
+     const added =
+-      typeof next === 'number'
+-        ? await settle(() => fb.queue.add({ playlistGuid: plan!.guid, track: next }))
++      next.row !== null
++        ? await settle(() => fb.queue.add({ playlistGuid: plan!.guid, track: next.row }))
+         : await settle(() => fb.queue.insertNext([next.path], 0));
+     if (added?.success) {
+       const track = trackAt(plan, next);
+       queuedByPlan = { key: keyOf(next), handle: track?.handle ?? '' };
+-      if (!track && typeof next === 'number') readTracks([next]);
++      if (!track && next.row !== null) readTracks([next.row]);
+     }
+   }
+ 
+@@ -253,9 +279,10 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     const seen = new Set<number>();
+     for (let p = plan.cursor; p <= plan.cursor + wanted && missing.length < READ_BATCH; p++) {
+       const entry = plan.order[p];
+-      if (typeof entry !== 'number' || plan.tracks.has(entry) || seen.has(entry)) continue;
+-      seen.add(entry);
+-      missing.push(entry);
++      const row = entry?.row;
++      if (row === undefined || row === null || plan.tracks.has(row) || seen.has(row)) continue;
++      seen.add(row);
++      missing.push(row);
+     }
+     if (missing.length === 0) return;
+     reading = true;
+@@ -297,8 +324,8 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+       if (!plan || entry === undefined) return false;
+       jump = { position };
+       const answer =
+-        typeof entry === 'number'
+-          ? await settle(() => fb.playlist.playTrack(plan.guid, entry))
++        entry.row !== null
++          ? await settle(() => fb.playlist.playTrack(plan.guid, entry.row))
+           : await settle(() => fb.player.playPath(entry.path));
+       return answer?.success === true;
+     },
+@@ -312,7 +339,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
+     },
+     insert(entry, index) {
+       reorder((order, cursor) => {
+-        order.splice(Math.min(order.length, cursor + Math.max(0, index)), 0, entry);
++        order.splice(Math.min(order.length, cursor + Math.max(0, index)), 0, withId(entry));
+       });
+     },
+     dispose() {
+-- 
+2.43.0
+

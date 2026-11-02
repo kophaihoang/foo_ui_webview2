@@ -1,0 +1,100 @@
+From a5138b7d97b995313f858f3998e64b36dc64cbcf Mon Sep 17 00:00:00 2001
+From: LVH <kophaileviethoang@gmail.com>
+Date: Sun, 1 Nov 2026 18:32:03 +0000
+Subject: [PATCH 06/16] Immersive: no CSS drag regions, top strip moves the
+ window by script; slower record
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/dial/DialCover.tsx            |  4 ++--
+ src/immersive/page/ImmersiveView.module.css |  2 --
+ src/immersive/page/ImmersiveView.tsx        | 18 +++++++++++++++++-
+ src/theme/ThemeRoot.tsx                     |  7 ++++---
+ 4 files changed, 23 insertions(+), 8 deletions(-)
+
+diff --git a/src/immersive/dial/DialCover.tsx b/src/immersive/dial/DialCover.tsx
+index 29c8504..dde0bbe 100644
+--- a/src/immersive/dial/DialCover.tsx
++++ b/src/immersive/dial/DialCover.tsx
+@@ -21,8 +21,8 @@ export interface DialCoverProps {
+ }
+ 
+ const playingAtom = atom((get) => get(playbackAtom).state === 'playing');
+-/** One turn of the label, ms: a calm 25 rpm rather than a dizzy 33⅓ */
+-const TURN_MS = 2400;
++/** One turn of the label, ms: a slow, calm 10 rpm */
++const TURN_MS = 6000;
+ /** Spin up and run down like a platter, ms */
+ const RAMP_MS = 700;
+ 
+diff --git a/src/immersive/page/ImmersiveView.module.css b/src/immersive/page/ImmersiveView.module.css
+index 699a5f2..dad3816 100644
+--- a/src/immersive/page/ImmersiveView.module.css
++++ b/src/immersive/page/ImmersiveView.module.css
+@@ -40,6 +40,4 @@
+   position: absolute;
+   inset: 0 0 auto;
+   height: 48px;
+-  -webkit-app-region: drag;
+-  app-region: drag;
+ }
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index 551954a..7304953 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -25,6 +25,8 @@ import { PresetsScene } from './PresetsScene.tsx';
+ import styles from './ImmersiveView.module.css';
+ import { startShufflePlan } from '../scene/shufflePlan.ts';
+ import { lockWindowDrag } from './windowDragLock.ts';
++import { fb } from 'foo-webview-sdk/bridge';
++import { settle } from '../../host/hostCall.ts';
+ import { cycleNext, isCycleTarget } from './viewCycle.ts';
+ 
+ export interface ImmersiveViewProps {
+@@ -173,7 +175,21 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+           <EntryStageContext value={stage}>
+             {scene === 'paper' ? <PaperScene /> : <PresetsScene />}
+           </EntryStageContext>
+-          <div className={styles.drag} aria-hidden />
++          {/* moves the window from script, not through app-region: a CSS drag region made the host move the
++              window during drags anywhere in the view (dragging a cover, scrubbing the waveform) */}
++          <div
++            className={styles.drag}
++            aria-hidden
++            onMouseDown={(event) => {
++              if (event.button !== 0 || event.detail > 1) return;
++              event.preventDefault();
++              void settle(() => fb.ui.startDrag());
++            }}
++            onDoubleClick={(event) => {
++              event.stopPropagation();
++              void settle(() => fb.ui.toggleMaximize());
++            }}
++          />
+           <ImmersiveControls
+             shell={shell}
+             shown={shown}
+diff --git a/src/theme/ThemeRoot.tsx b/src/theme/ThemeRoot.tsx
+index 0e1b758..313ecc6 100644
+--- a/src/theme/ThemeRoot.tsx
++++ b/src/theme/ThemeRoot.tsx
+@@ -105,11 +105,12 @@ export interface ThemeRootProps {
+  */
+ /** Immersive layers read these when clear glass is on (see ImmersiveView, PresetsScene, PaperScene, PaperCoverWash) */
+ /**
+- * While the immersive view is up the main window underneath must not drag the window: its title bar keeps
+- * its drag region even when hidden or covered, and a press there would move the whole window
++ * While the immersive view is up nothing in the page is a CSS drag region: the host asks WebView2 for drag
++ * regions on every press and moved the window during drags inside the view. The view's top strip moves the
++ * window from script instead (`fb.ui.startDrag`)
+  */
+ const IMMERSIVE_NO_DRAG =
+-  ':root[data-immersive] #root, :root[data-immersive] #root * { -webkit-app-region: no-drag; app-region: no-drag; }\n';
++  ':root[data-immersive] *, :root[data-immersive] *::before, :root[data-immersive] *::after { -webkit-app-region: no-drag !important; app-region: no-drag !important; }\n';
+ 
+ function clearGlassVars(level: number, wash: number): string {
+   const paper = ((level / 100) * 0.6).toFixed(3);
+-- 
+2.43.0
+

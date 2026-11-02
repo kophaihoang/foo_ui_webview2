@@ -1,0 +1,199 @@
+.root {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  color: var(--colorNeutralForeground1);
+}
+
+/* 右边的 --edge-bleed 是页面伸到窗口右缘的那一段，头和脚退回原来的右缘 */
+.head {
+  margin-right: var(--edge-bleed, 0px);
+  padding: calc(var(--lyrics-preview-top, 0px) + var(--spacingVerticalM)) var(--spacingHorizontalM)
+    0;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS);
+}
+
+.track {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+}
+
+.track strong,
+.text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.byline,
+.source {
+  color: var(--colorNeutralForeground3);
+  font-size: var(--fontSizeBase200);
+}
+
+.views {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacingHorizontalS);
+  min-height: 36px;
+}
+
+.body,
+.animation {
+  min-height: 0;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.root > * {
+  grid-column: 1;
+}
+
+.head {
+  grid-row: 1;
+}
+
+.footer {
+  grid-row: 3;
+}
+
+.body {
+  grid-row: 2;
+}
+
+/* 两种可见范围共用同一条渐变；遮罩只取透明度，不向窗口背景叠色 */
+.root[data-lyrics-ready] > .body {
+  --lyrics-inset-top: 0px;
+  --lyrics-inset-bottom: 0px;
+  --lyrics-edge-fade: var(--spacingVerticalXXXL);
+  grid-row: 1 / -1;
+  clip-path: inset(var(--lyrics-inset-top) 0 var(--lyrics-inset-bottom));
+  mask-image: linear-gradient(
+    to bottom,
+    transparent var(--lyrics-inset-top),
+    var(--colorNeutralForeground1) calc(var(--lyrics-inset-top) + var(--lyrics-edge-fade)),
+    var(--colorNeutralForeground1) calc(100% - var(--lyrics-inset-bottom) - var(--lyrics-edge-fade)),
+    transparent calc(100% - var(--lyrics-inset-bottom))
+  );
+}
+
+.root[data-lyrics-ready][data-controls-visible] > .body {
+  --lyrics-inset-top: var(--lyrics-head-height, 0px);
+  --lyrics-inset-bottom: var(--lyrics-footer-height, 0px);
+}
+
+.reading {
+  height: 100%;
+  box-sizing: border-box;
+  padding-block: var(--lyrics-inset-top) var(--lyrics-inset-bottom);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacingVerticalM);
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: var(--spacingVerticalM) calc(var(--spacingHorizontalL) + var(--edge-bleed, 0px))
+    var(--spacingVerticalM) var(--spacingHorizontalL);
+  text-align: center;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.footer {
+  margin-right: var(--edge-bleed, 0px);
+  padding: var(--spacingVerticalS) var(--spacingHorizontalM);
+  border-top: var(--strokeWidthThin) solid var(--line);
+}
+
+.head,
+.footer {
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-faster) var(--curveLinear);
+}
+
+.root[data-controls-visible] > .head,
+.root[data-controls-visible] > .footer {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .head,
+  .footer {
+    transition: none;
+  }
+}
+
+.privacy {
+  margin: 0;
+  font-size: var(--fontSizeBase200);
+  line-height: var(--lineHeightBase200);
+  color: var(--colorNeutralForeground2);
+  overflow-wrap: anywhere;
+}
+
+.screen-reader-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.subpage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding-top: var(--lyrics-preview-top, 0px);
+}
+.subpage > .body {
+  grid-row: 1;
+}
+.byline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacingHorizontalS);
+}
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacingHorizontalXS);
+  min-width: 0;
+  max-width: 100%;
+}
+.field svg {
+  flex: none;
+}
+.tools {
+  display: flex;
+  margin-left: auto;
+}

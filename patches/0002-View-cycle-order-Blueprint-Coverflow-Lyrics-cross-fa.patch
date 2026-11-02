@@ -1,0 +1,298 @@
+From ad5a30ff537c1afdb5113944559685738a5162ef Mon Sep 17 00:00:00 2001
+From: LVH <kophaileviethoang@gmail.com>
+Date: Sun, 1 Nov 2026 17:21:47 +0000
+Subject: [PATCH 02/16] View cycle order Blueprint -> Coverflow -> Lyrics,
+ cross-fade, coverflow taps, shuffle lookahead
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BozVN1RfiSxLokoA3Q3yHZ
+---
+ src/immersive/cover-art/CoverArt.tsx        | 15 +++--
+ src/immersive/coverflow/Coverflow.tsx       | 20 ++++--
+ src/immersive/coverflow/shuffleLookahead.ts | 67 +++++++++++++++++++
+ src/immersive/page/ImmersiveView.tsx        |  2 +-
+ src/immersive/page/viewCycle.ts             | 71 ++++++++++++++++++---
+ 5 files changed, 154 insertions(+), 21 deletions(-)
+ create mode 100644 src/immersive/coverflow/shuffleLookahead.ts
+
+diff --git a/src/immersive/cover-art/CoverArt.tsx b/src/immersive/cover-art/CoverArt.tsx
+index 1609199..74b695d 100644
+--- a/src/immersive/cover-art/CoverArt.tsx
++++ b/src/immersive/cover-art/CoverArt.tsx
+@@ -1,5 +1,5 @@
+ import { MusicNote224Regular } from '@fluentui/react-icons';
+-import { useAtomValueRawSync } from 'jotai/react';
++import { useAtomValueRawSync, useStore } from 'jotai/react';
+ import type { CSSProperties } from 'react';
+ import { immersiveCoverAtom, immersiveCoverKey } from '../../covers/immersiveCover.ts';
+ import type { ImmersiveCoverState } from '../../covers/immersiveCover.ts';
+@@ -8,6 +8,8 @@ import { useLease } from '../lease/useLease.ts';
+ import { SCENE_COVER_LAYER } from '../scene/coverHolders.ts';
+ import { useCoverHolder } from '../scene/useCoverHolder.ts';
+ import { SceneActionsContext } from '../scene/sceneContext.ts';
++import { sceneStateAtom } from '../scene/sceneActions.ts';
++import { cycleFromLyrics } from '../page/viewCycle.ts';
+ import { useContext } from 'react';
+ import styles from './CoverArt.module.css';
+ 
+@@ -34,8 +36,11 @@ export function CoverArt({ radius = 12, shadow = true }: CoverArtProps) {
+   const cover = useAtomValueRawSync(immersiveCoverAtom);
+   const service = useLease(immersiveCoverKey);
+   const holder = useCoverHolder(SCENE_COVER_LAYER);
+-  // one-tap view cycle: Lyrics → Coverflow
+-  const actions = useContext(SceneActionsContext);
++  // one-tap view cycle: Lyrics → Blueprint
++  const store = useStore();
++  const inPresets = useContext(SceneActionsContext) !== null;
++  const lyricsMode = useAtomValueRawSync(sceneStateAtom).mode === 'none';
++  const cycles = inPresets && lyricsMode;
+   // 封面未就绪时保持中性底色以防闪烁
+   const waiting = cover.status === 'loading' && cover.url === null;
+   // 基于图片令牌回报解码完成状态，丢弃过期回调
+@@ -48,8 +53,8 @@ export function CoverArt({ radius = 12, shadow = true }: CoverArtProps) {
+       className={styles.cover}
+       data-scene-element="cover"
+       data-shadow={shadow || undefined}
+-      data-cycle={actions ? '' : undefined}
+-      onClick={actions ? () => actions.setMode('coverflow') : undefined}
++      data-cycle={cycles ? '' : undefined}
++      onClick={cycles ? () => cycleFromLyrics(store) : undefined}
+       style={{ '--cover-radius': `${radius}px` } as CSSProperties}
+       aria-hidden
+     >
+diff --git a/src/immersive/coverflow/Coverflow.tsx b/src/immersive/coverflow/Coverflow.tsx
+index b62157e..3ee89eb 100644
+--- a/src/immersive/coverflow/Coverflow.tsx
++++ b/src/immersive/coverflow/Coverflow.tsx
+@@ -18,7 +18,7 @@ import { pathOf } from '../../playback/queue/queueMenu.ts';
+ import type { RowPoint } from '../../playback/queue/QueueRow.tsx';
+ import { queueKey } from '../../playback/queue/queueServices.ts';
+ import { upEarlierAtom, upNextAtom } from '../../playback/queue/upNext.ts';
+-import { cycleFromCoverflow } from '../page/viewCycle.ts';
++import { useShuffleLookahead } from './shuffleLookahead.ts';
+ import { createWheelStepper } from '../../playback/volume/wheelSteps.ts';
+ import { coverflowItemsAtom } from '../scene/coverflowAtoms.ts';
+ import { currentIndexOf, selectedIndexOf } from '../scene/coverflowItems.ts';
+@@ -164,11 +164,8 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+   const activate = (key: string) => {
+     const at = store.get(coverflowItemsAtom).findIndex((item) => item.key === key);
+     if (at < 0) return;
+-    if (at === selectedNow()) {
+-      // one-tap view cycle: tapping the playing cover goes on to Blueprint; a browsed cover still plays
+-      if (store.get(coverflowItemsAtom)[at]?.kind === 'current') cycleFromCoverflow(store);
+-      else void play(true);
+-    } else selectIndex(at);
++    if (at === selectedNow()) void play(true);
++    else selectIndex(at);
+   };
+   // 右键呼出上下文菜单时不改变当前焦点选中项
+   const openMenu = (key: string, at: RowPoint) => {
+@@ -294,6 +291,10 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+     return () => element.removeEventListener('wheel', hold);
+   }, []);
+ 
++  useShuffleLookahead(!leaving);
++  const onEmpty = (target: EventTarget) =>
++    !(target instanceof Element && target.closest(`.${styles.card}`));
++
+   const style: CSSProperties & Record<`--${string}`, string> = {
+     '--cf-cover': `${layout.cover}px`,
+     '--cf-top': `${layout.top}px`,
+@@ -310,6 +311,13 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
+         aria-activedescendant={`${baseId}-${selected}`}
+         data-scene-element="coverflow"
+         data-key-pass
++        // empty space: one tap glides back to the playing song, a double tap moves on to the Lyrics view
++        onClick={(event) => {
++          if (onEmpty(event.target)) sceneActions.browse(null);
++        }}
++        onDoubleClick={(event) => {
++          if (onEmpty(event.target)) sceneActions.setMode('none');
++        }}
+         onWheel={(event: WheelEvent) => {
+           // two-finger swipe on a touchpad: sideways swipes move the covers too (right = next)
+           const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+diff --git a/src/immersive/coverflow/shuffleLookahead.ts b/src/immersive/coverflow/shuffleLookahead.ts
+new file mode 100644
+index 0000000..5f4780a
+--- /dev/null
++++ b/src/immersive/coverflow/shuffleLookahead.ts
+@@ -0,0 +1,67 @@
++import { fb } from 'foo-webview-sdk/bridge';
++import { useAtomValueRawSync } from 'jotai/react';
++import { useEffect, useRef } from 'react';
++import { currentTrackAtom, playbackOrderAtom } from '../../playback/playback.ts';
++import { queueViewAtom } from '../../playback/queue/queueState.ts';
++
++/** How many songs the coverflow keeps lined up on its right while a random order is on */
++const LOOKAHEAD = 6;
++const RANDOM_ORDERS = new Set(['random', 'shuffle-tracks', 'shuffle-albums', 'shuffle-folders']);
++
++/**
++ * In a random playback order foobar2000 decides the next song only when the current one ends, so there is
++ * nothing to show on the right of the coverflow. While the coverflow is open this picks the upcoming songs
++ * itself, at random from the playing playlist, and puts them in the playback queue: they show up on the right
++ * and are really what plays next. The queue is only topped up, never cleared, and songs already in it count.
++ */
++export function useShuffleLookahead(enabled: boolean): void {
++  const order = useAtomValueRawSync(playbackOrderAtom);
++  const queued = useAtomValueRawSync(queueViewAtom).entries;
++  const current = useAtomValueRawSync(currentTrackAtom);
++  const busy = useRef(false);
++  // the queue view catches up a moment after an add; don't add again before it has
++  const lastAdd = useRef(0);
++  const random = order !== null && RANDOM_ORDERS.has(order);
++  const need = LOOKAHEAD - queued.length;
++  const taken = queued.map((entry) => entry.spot?.row ?? -1).join(',');
++
++  useEffect(() => {
++    if (!enabled || !random || need <= 0 || current === null) return;
++    let cancelled = false;
++    const timer = setTimeout(() => {
++      if (busy.current || Date.now() - lastAdd.current < 2000) return;
++      busy.current = true;
++      void (async () => {
++        try {
++          const playing = await fb.player.getPlayingPlaylist();
++          if (cancelled || !playing.success || !playing.found || playing.playlistGuid === null) return;
++          const guid = playing.playlistGuid;
++          const counted = await fb.playlist.getCount(guid);
++          if (cancelled || !counted.success || counted.count < 2) return;
++          const at = await fb.player.getCurrentTrackIndex();
++          const skip = new Set(taken.split(',').map(Number));
++          if (at.success && at.found && at.index !== null) skip.add(at.index);
++          const free = counted.count - skip.size;
++          const rows: number[] = [];
++          for (let tries = 0; rows.length < Math.min(need, free) && tries < need * 20; tries++) {
++            const row = Math.floor(Math.random() * counted.count);
++            if (skip.has(row)) continue;
++            skip.add(row);
++            rows.push(row);
++          }
++          if (cancelled || rows.length === 0) return;
++          lastAdd.current = Date.now();
++          await fb.queue.add({ playlistGuid: guid, tracks: rows });
++        } catch {
++          // the host went away or refused; the coverflow simply shows what it has
++        } finally {
++          busy.current = false;
++        }
++      })();
++    }, 350);
++    return () => {
++      cancelled = true;
++      clearTimeout(timer);
++    };
++  }, [enabled, random, need, taken, current]);
++}
+diff --git a/src/immersive/page/ImmersiveView.tsx b/src/immersive/page/ImmersiveView.tsx
+index 37b41bb..4f34168 100644
+--- a/src/immersive/page/ImmersiveView.tsx
++++ b/src/immersive/page/ImmersiveView.tsx
+@@ -140,7 +140,7 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
+       }}
+     >
+       <span className={styles.guard} tabIndex={0} aria-hidden onFocus={guard('start')} />
+-      <div ref={content} className={styles.content}>
++      <div ref={content} className={styles.content} data-immersive-content>
+         <ControlSlotsContext value={slots}>
+           <EntryStageContext value={stage}>
+             {scene === 'paper' ? <PaperScene /> : <PresetsScene />}
+diff --git a/src/immersive/page/viewCycle.ts b/src/immersive/page/viewCycle.ts
+index a4023ab..68d7237 100644
+--- a/src/immersive/page/viewCycle.ts
++++ b/src/immersive/page/viewCycle.ts
+@@ -1,13 +1,17 @@
+ import type { Store } from '../../kit/store.ts';
++import { reducedMotionAtom } from '../../motion/reducedMotion.ts';
+ import { forceSceneMode } from '../scene/sceneActions.ts';
+ import type { SceneMode } from '../scene/sceneState.ts';
+ import { chooseImmersiveScene } from './immersivePrefs.ts';
+ 
+ /**
+- * One-tap view cycle: tapping the album cover steps Blueprint → Lyrics → Coverflow → Blueprint.
+- * Blueprint is the `paper` scene; Lyrics and Coverflow are the `presets` scene with mode `none` / `coverflow`.
++ * One-tap view cycle: Blueprint → Coverflow → Lyrics → Blueprint.
++ * Blueprint is the `paper` scene; Coverflow and Lyrics are the `presets` scene with mode `coverflow` / `none`.
++ * Coverflow → Lyrics stays inside the presets scene and uses its own view transition; the two scene swaps
++ * cross-fade the whole view so every step feels the same.
+  */
+ let enterPresetsAs: SceneMode | null = null;
++let swapping = false;
+ 
+ /** Read once by the presets scene when it mounts, after it restored its own snapshot */
+ export function takePresetsEntryMode(): SceneMode | null {
+@@ -16,14 +20,63 @@ export function takePresetsEntryMode(): SceneMode | null {
+   return mode;
+ }
+ 
+-/** Blueprint → Lyrics */
++const OUT_MS = 170;
++const IN_MS = 320;
++const EASE_OUT = 'cubic-bezier(0.4, 0, 1, 1)';
++const EASE_IN = 'cubic-bezier(0.1, 0.9, 0.2, 1)';
++
++const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
++
++/** Fade the view out, swap the scene, let the new scene measure itself, then fade it back in */
++async function fadeSwap(store: Store, update: () => void): Promise<void> {
++  const content = document.querySelector<HTMLElement>('[data-immersive-content]');
++  if (!content || store.get(reducedMotionAtom) || document.visibilityState !== 'visible') {
++    update();
++    return;
++  }
++  if (swapping) return;
++  swapping = true;
++  try {
++    await content
++      .animate(
++        [
++          { opacity: 1, transform: 'scale(1)', filter: 'blur(0px)' },
++          { opacity: 0, transform: 'scale(0.985)', filter: 'blur(6px)' },
++        ],
++        { duration: OUT_MS, easing: EASE_OUT, fill: 'forwards' },
++      )
++      .finished.catch(() => {});
++    update();
++    // the presets scene lays itself out from its measured box: give it two frames before showing it
++    await nextFrame();
++    await nextFrame();
++    for (const running of content.getAnimations()) running.cancel();
++    await content
++      .animate(
++        [
++          { opacity: 0, transform: 'scale(1.015)', filter: 'blur(6px)' },
++          { opacity: 1, transform: 'scale(1)', filter: 'blur(0px)' },
++        ],
++        { duration: IN_MS, easing: EASE_IN },
++      )
++      .finished.catch(() => {});
++  } finally {
++    swapping = false;
++  }
++}
++
++/** Blueprint → Coverflow */
+ export function cycleFromBlueprint(store: Store): void {
+-  enterPresetsAs = 'none';
+-  chooseImmersiveScene(store, 'presets');
++  void fadeSwap(store, () => {
++    enterPresetsAs = 'coverflow';
++    chooseImmersiveScene(store, 'presets');
++  });
+ }
+ 
+-/** Coverflow → Blueprint */
+-export function cycleFromCoverflow(store: Store): void {
+-  forceSceneMode(store, 'none');
+-  chooseImmersiveScene(store, 'paper');
++/** Lyrics → Blueprint */
++export function cycleFromLyrics(store: Store): void {
++  void fadeSwap(store, () => {
++    forceSceneMode(store, 'none');
++    chooseImmersiveScene(store, 'paper');
++  });
+ }
+-- 
+2.43.0
+
