@@ -4,7 +4,7 @@ name: Build component (clear-window)
 on:
   push:
     branches: [clear-window]
-    paths-ignore: ['.github/**']
+    paths-ignore: ['.github/**', '**.md']
   workflow_dispatch:
 
 permissions:
