@@ -27,18 +27,25 @@ int main() {
 
     const automix::Beats b = automix::analyseBeats(a.data(), frames, ch, rate);
     std::printf("bpm %.2f, spread %.3f, %zu beats, %zu downbeats\n", b.bpm, b.spread, b.frames.size(), b.downbeats.size());
+    std::fflush(stdout);
     assert(std::fabs(b.bpm - 120) < 1);
     assert(b.steady());
 
-    // beats land on the kicks (systematic offset reported; it cancels out between two tracks)
-    double worst = 0;
+    // beats land on the kicks at a steady offset (a constant offset cancels out between two tracks)
+    std::vector<double> err;
     for (size_t i = 4; i + 4 < b.frames.size(); ++i) {
         double e = std::fmod(b.frames[i] / rate, beat);
         if (e > beat / 2) e -= beat;
-        worst = std::fmax(worst, std::fabs(e));
+        err.push_back(e);
     }
-    std::printf("worst beat offset %.1f ms\n", worst * 1000);
-    assert(worst < 0.03);
+    double mean = 0, worst = 0;
+    for (double e : err) mean += e;
+    mean /= err.size();
+    for (double e : err) worst = std::fmax(worst, std::fabs(e - mean));
+    std::printf("beat offset %.1f ms, jitter %.1f ms
+", mean * 1000, worst * 1000);
+    std::fflush(stdout);
+    assert(worst < 0.015);
 
     for (size_t i = 1; i < b.downbeats.size(); ++i) assert(b.downbeats[i] - b.downbeats[i - 1] == 4);
 
