@@ -57,3 +57,13 @@ jobs:
           cd ../dll && git init -q && git checkout -q -b automix-dll
           git add . && git -c user.name=ci -c user.email=ci@local commit -q -m "AutoMix from ${GITHUB_SHA}"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" automix-dll
+
+      # build log on a branch too: job logs need a sign-in, a branch can be fetched over git
+      - name: Publish build log on failure
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p ../log && cp build_log.txt ../log/ 2>/dev/null || echo "no log" > ../log/build_log.txt
+          cd ../log && git init -q && git checkout -q -b automix-log
+          git add . && git -c user.name=ci -c user.email=ci@local commit -q -m "Build log from ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" automix-log
