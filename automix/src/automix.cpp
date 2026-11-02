@@ -26,7 +26,7 @@
 #include "mix.h"
 #include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.2.1",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.2.2",
     "DJ-style transitions between tracks.\n"
     "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
     "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
@@ -61,6 +61,8 @@ constexpr double kHeadSearchSeconds = 30;  // longest leading silence we skip in
 constexpr double kHeadSeconds = 60;  // how much of the next track is decoded after its leading silence
 constexpr double kPrepareLeadSeconds = 20;  // the next track is predicted and decoded this long before the mix
 constexpr double kRecheckLeadSeconds = 2;  // ...and checked once more this long before
+constexpr double kLastAskSeconds = 4;  // an unknown next track is asked for again until this long before the plain transition
+constexpr double kShortestSeconds = 2;  // a transition prepared late is shortened, but not below this
 
 void log(const char* msg) { FB2K_console_formatter() << "AutoMix: " << msg; }
 
@@ -251,8 +253,15 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
 
         // 2. which track comes next
         waitForPos(p, earliest - (int64_t)(kPrepareLeadSeconds * rate));
-        const NextTrack next = inMain<NextTrack>([current] { return predictNext(current); }, abort);
-        if (!next.handle.is_valid()) throw Failure(pfc::string_formatter()._formatter() << "không đoán được bài kế: " << next.why);
+        // the queue may still get its next song (the theme fills it), so keep asking until shortly before
+        NextTrack next;
+        for (;;) {
+            next = inMain<NextTrack>([current] { return predictNext(current); }, abort);
+            if (next.handle.is_valid()) break;
+            if (p.pos >= plainStart - (int64_t)(kLastAskSeconds * rate))
+                throw Failure(pfc::string_formatter()._formatter() << "không đoán được bài kế: " << next.why);
+            abort.sleep(1.0);
+        }
 
         // 3. its head, from the very start so beat positions are track positions
         auto nd = openDecoder(next.handle, input_flag_simpledecode, abort);
@@ -288,16 +297,24 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
         Transition t;
         std::string why;
         bool beat = false;
+        // ready less than a second before it starts counts as too late
+        auto late = [&] { return p.pos >= t.renderStart - (int64_t)rate; };
         if (beatMatch) {
             const Beats nextBeats = analyseBeats(head.data.data(), head.data.size() / channels, channels, head.rate);
             beat = beatTransition(old, oldBeats, oldPlan, head, skip, nextBeats, s, rs, t, why);
-            if (beat && p.pos >= t.renderStart) {
+            if (beat && late()) {
                 beat = false;
                 why = "đã qua điểm bắt đầu khớp nhịp";
             }
         }
         if (!beat) t = plainTransition(old, end, head, skip, s, rs);
-        if (p.pos >= t.renderStart) throw Failure("đã qua điểm chuyển khi chuẩn bị xong");
+        if (late()) {
+            // prepared late (a seek near the end, a late queue): a shorter overlap still fits
+            const double left = (double)(end - p.pos) / rate - 2;
+            if (left < kShortestSeconds) throw Failure("đã quá gần cuối bài khi chuẩn bị xong");
+            s.seconds = (std::min)(s.seconds, left);
+            t = plainTransition(old, end, head, skip, s, rs);
+        }
 
         p.next = next.handle;
         p.renderStart = t.renderStart;
