@@ -1,0 +1,347 @@
+test_mix.cpp
+test_mix: ok
+Build started 11/3/2026 5:22:55 AM.
+Logging verbosity is set to: Normal.
+     1>Project "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.sln" on node 1 (default targets).
+     1>ValidateSolutionConfiguration:
+         Building solution configuration "Release|x64".
+     1>Project "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.sln" (1) is building "D:\a\foo_ui_webview2\foo_ui_webview2\lib\foobar2000_sdk\foobar2000\SDK\foobar2000_SDK.vcxproj" (5) on node 2 (default targets).
+     5>PrepareForBuild:
+         Creating directory "x64\Release\".
+     1>Project "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.sln" (1) is building "D:\a\foo_ui_webview2\foo_ui_webview2\lib\foobar2000_sdk\pfc\pfc.vcxproj" (4) on node 3 (default targets).
+     4>PrepareForBuild:
+         Creating directory "x64\Release\".
+     1>Project "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.sln" (1) is building "D:\a\foo_ui_webview2\foo_ui_webview2\lib\foobar2000_sdk\foobar2000\foobar2000_component_client\foobar2000_component_client.vcxproj" (3) on node 4 (default targets).
+     3>PrepareForBuild:
+         Creating directory "x64\Release\".
+     4>PrepareForBuild:
+         Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+     3>PrepareForBuild:
+         Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+     5>PrepareForBuild:
+         Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+     3>PrepareForBuild:
+         Creating directory "D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\".
+     5>PrepareForBuild:
+         Creating directory "D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\".
+     4>PrepareForBuild:
+         Creating directory "D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\".
+     5>PrepareForBuild:
+         Creating directory "x64\Release\foobar2000_SDK.tlog\".
+     3>PrepareForBuild:
+         Creating directory "x64\Release\foobar20.71AD2674.tlog\".
+     4>PrepareForBuild:
+         Creating directory "x64\Release\pfc.tlog\".
+     5>InitializeBuildStatus:
+         Creating "x64\Release\foobar2000_SDK.tlog\unsuccessfulbuild" because "AlwaysCreate" was specified.
+     4>InitializeBuildStatus:
+         Creating "x64\Release\pfc.tlog\unsuccessfulbuild" because "AlwaysCreate" was specified.
+     3>InitializeBuildStatus:
+         Creating "x64\Release\foobar20.71AD2674.tlog\unsuccessfulbuild" because "AlwaysCreate" was specified.
+         Touching "x64\Release\foobar20.71AD2674.tlog\unsuccessfulbuild".
+     4>InitializeBuildStatus:
+         Touching "x64\Release\pfc.tlog\unsuccessfulbuild".
+     5>InitializeBuildStatus:
+         Touching "x64\Release\foobar2000_SDK.tlog\unsuccessfulbuild".
+     3>ClCompile:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\CL.exe /c /I.. /I../.. /Zi /nologo /W3 /WX- /diagnostics:column /O2 /Oy /GL /D NDEBUG /D _UNICODE /D UNICODE /D _UNICODE /D UNICODE /GF /Gm- /EHsc /MD /GS- /fp:fast /Zc:wchar_t /Zc:forScope /Zc:inline /GR- /std:c++20 /permissive- /Fo"x64\Release\\" /Fd"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\foobar2000_component_client.pdb" /external:W3 /Gd /TP /FC /errorReport:queue /we4715 /d2notypeopt component_client.cpp
+     5>ClCompile:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\CL.exe /c /I.. /I..\.. /Zi /nologo /W3 /WX- /diagnostics:column /MP /O1 /Oi /Oy /GL /D NDEBUG /D _UNICODE /D UNICODE /D _UNICODE /D UNICODE /GF /Gm- /EHsc /MD /GS- /fp:fast /Zc:wchar_t /Zc:forScope /Zc:inline /GR- /std:c++20 /permissive- /Yc"foobar2000-sdk-pch.h" /Fp"x64\Release\foobar2000_SDK.pch" /Fo"x64\Release\\" /Fd"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\foobar2000_SDK.pdb" /external:W3 /Gd /TP /FC /errorReport:queue /we4715 /d2notypeopt stdafx.cpp
+     4>ClCompile:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\CL.exe /c /Zi /nologo /W3 /WX- /diagnostics:column /MP /O2 /Oi /Oy /GL /D NDEBUG /D _UNICODE /D UNICODE /D _UNICODE /D UNICODE /GF /Gm- /EHsc /MD /GS- /fp:fast /Zc:wchar_t /Zc:forScope /Zc:inline /GR- /std:c++20 /permissive- /Yc"pfc-lite.h" /Fp"x64\Release\pfc.pch" /Fo"x64\Release\\" /Fd"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\pfc.pdb" /external:W3 /Gd /TP /FC /errorReport:queue /we4715 /d2notypeopt stdafx.cpp
+         stdafx.cpp
+     5>ClCompile:
+         stdafx.cpp
+     3>ClCompile:
+         component_client.cpp
+     4>ClCompile:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\CL.exe /c /Zi /nologo /W3 /WX- /diagnostics:column /MP /O2 /Oi /Oy /GL /D NDEBUG /D _UNICODE /D UNICODE /D _UNICODE /D UNICODE /GF /Gm- /EHsc /MD /GS- /fp:fast /Zc:wchar_t /Zc:forScope /Zc:inline /GR- /std:c++20 /permissive- /Yu"pfc-lite.h" /Fp"x64\Release\pfc.pch" /Fo"x64\Release\\" /Fd"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\pfc.pdb" /external:W3 /Gd /TP /FC /errorReport:queue /we4715 /d2notypeopt audio_math.cpp audio_sample.cpp base64.cpp bigmem.cpp bit_array.cpp bsearch.cpp charDownConvert.cpp cpuid.cpp crashWithMessage.cpp filehandle.cpp filetimetools.cpp guid.cpp other.cpp pathUtils.cpp printf.cpp selftest.cpp SmartStrStr.cpp sort.cpp splitString2.cpp "string-compare.cpp" "string-conv-lite.cpp" "string-lite.cpp" string_base.cpp string_conv.cpp threads.cpp timers.cpp "unicode-normalize.cpp" utf8.cpp wildcard.cpp "win-objects.cpp"
+     5>ClCompile:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\CL.exe /c /I.. /I..\.. /Zi /nologo /W3 /WX- /diagnostics:column /MP /O1 /Oi /Oy /GL /D NDEBUG /D _UNICODE /D UNICODE /D _UNICODE /D UNICODE /GF /Gm- /EHsc /MD /GS- /fp:fast /Zc:wchar_t /Zc:forScope /Zc:inline /GR- /std:c++20 /permissive- /Yu"foobar2000-sdk-pch.h" /Fp"x64\Release\foobar2000_SDK.pch" /Fo"x64\Release\\" /Fd"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\foobar2000_SDK.pdb" /external:W3 /Gd /TP /FC /errorReport:queue /we4715 /d2notypeopt abort_callback.cpp advconfig.cpp album_art.cpp app_close_blocker.cpp audio_chunk.cpp audio_chunk_channel_config.cpp cfg_var.cpp cfg_var_legacy.cpp chapterizer.cpp commandline.cpp commonObjects.cpp completion_notify.cpp componentversion.cpp configStore.cpp config_io_callback.cpp config_object.cpp console.cpp dsp.cpp dsp_manager.cpp file_cached_impl.cpp file_info.cpp file_info_const_impl.cpp file_info_impl.cpp file_info_merge.cpp file_operation_callback.cpp filesystem.cpp filesystem_helper.cpp foosort.cpp fsItem.cpp guids.cpp hasher_md5.cpp image.cpp input.cpp input_file_type.cpp link_resolver.cpp mainmenu.cpp main_thread_callback.cpp mem_block_container.cpp menu_helpers.cpp menu_item.cpp menu_manager.cpp metadb.cpp metadb_handle.cpp metadb_handle_list.cpp output.cpp packet_decoder.cpp playable_location.cpp playback_control.cpp playlist.cpp playlist_loader.cpp popup_message.cpp preferences_page.cpp replaygain.cpp replaygain_info.cpp service.cpp tag_processor.cpp tag_processor_id3v2.cpp threaded_process.cpp titleformat.cpp track_property.cpp ui.cpp ui_element.cpp utility.cpp
+         abort_callback.cpp
+     4>ClCompile:
+         audio_math.cpp
+     5>ClCompile:
+         advconfig.cpp
+     4>ClCompile:
+         audio_sample.cpp
+     5>ClCompile:
+         album_art.cpp
+     4>ClCompile:
+         base64.cpp
+         bigmem.cpp
+     5>ClCompile:
+         app_close_blocker.cpp
+     3>Lib:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\Lib.exe /OUT:"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\foobar2000_component_client.lib" /NOLOGO /MACHINE:X64 /LTCG x64\Release\component_client.obj
+     4>ClCompile:
+         bit_array.cpp
+         bsearch.cpp
+     5>ClCompile:
+         audio_chunk.cpp
+     4>ClCompile:
+         charDownConvert.cpp
+     5>ClCompile:
+         audio_chunk_channel_config.cpp
+     4>ClCompile:
+         cpuid.cpp
+         crashWithMessage.cpp
+     5>ClCompile:
+         cfg_var.cpp
+     4>ClCompile:
+         filehandle.cpp
+     5>ClCompile:
+         cfg_var_legacy.cpp
+     3>Lib:
+         foobar2000_component_client.vcxproj -> D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\foobar2000_component_client.lib
+     4>ClCompile:
+         filetimetools.cpp
+     5>ClCompile:
+         chapterizer.cpp
+     4>ClCompile:
+         guid.cpp
+     5>ClCompile:
+         commandline.cpp
+     4>ClCompile:
+         other.cpp
+     5>ClCompile:
+         commonObjects.cpp
+         completion_notify.cpp
+     4>ClCompile:
+         pathUtils.cpp
+     5>ClCompile:
+         componentversion.cpp
+         configStore.cpp
+     4>ClCompile:
+         printf.cpp
+     5>ClCompile:
+         config_io_callback.cpp
+         config_object.cpp
+     4>ClCompile:
+         selftest.cpp
+     5>ClCompile:
+         console.cpp
+         dsp.cpp
+     4>ClCompile:
+         SmartStrStr.cpp
+     5>ClCompile:
+         dsp_manager.cpp
+     4>ClCompile:
+         sort.cpp
+     5>ClCompile:
+         file_cached_impl.cpp
+     4>ClCompile:
+         splitString2.cpp
+     5>ClCompile:
+         file_info.cpp
+         file_info_const_impl.cpp
+     4>ClCompile:
+         string-compare.cpp
+     5>ClCompile:
+         file_info_impl.cpp
+     4>ClCompile:
+         string-conv-lite.cpp
+     5>ClCompile:
+         file_info_merge.cpp
+     4>ClCompile:
+         string-lite.cpp
+     5>ClCompile:
+         file_operation_callback.cpp
+     4>ClCompile:
+         string_base.cpp
+     5>ClCompile:
+         filesystem.cpp
+     4>ClCompile:
+         string_conv.cpp
+         threads.cpp
+     5>ClCompile:
+         filesystem_helper.cpp
+     4>ClCompile:
+         timers.cpp
+         unicode-normalize.cpp
+         utf8.cpp
+     5>ClCompile:
+         foosort.cpp
+     4>ClCompile:
+         wildcard.cpp
+         win-objects.cpp
+     5>ClCompile:
+         fsItem.cpp
+         guids.cpp
+         hasher_md5.cpp
+         image.cpp
+         input.cpp
+         input_file_type.cpp
+         link_resolver.cpp
+         mainmenu.cpp
+         main_thread_callback.cpp
+         mem_block_container.cpp
+         menu_helpers.cpp
+     4>Lib:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\Lib.exe /OUT:"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\pfc.lib" /NOLOGO /MACHINE:X64 /LTCG x64\Release\audio_math.obj
+         x64\Release\audio_sample.obj
+         x64\Release\base64.obj
+         x64\Release\bigmem.obj
+         x64\Release\bit_array.obj
+         x64\Release\bsearch.obj
+         x64\Release\charDownConvert.obj
+         x64\Release\cpuid.obj
+         x64\Release\crashWithMessage.obj
+         x64\Release\filehandle.obj
+         x64\Release\filetimetools.obj
+         x64\Release\guid.obj
+         x64\Release\other.obj
+         x64\Release\pathUtils.obj
+         x64\Release\printf.obj
+         x64\Release\selftest.obj
+         x64\Release\SmartStrStr.obj
+         x64\Release\sort.obj
+         x64\Release\splitString2.obj
+         x64\Release\stdafx.obj
+         "x64\Release\string-compare.obj"
+         "x64\Release\string-conv-lite.obj"
+         "x64\Release\string-lite.obj"
+         x64\Release\string_base.obj
+         x64\Release\string_conv.obj
+         x64\Release\threads.obj
+         x64\Release\timers.obj
+         "x64\Release\unicode-normalize.obj"
+         x64\Release\utf8.obj
+         x64\Release\wildcard.obj
+         "x64\Release\win-objects.obj"
+     5>ClCompile:
+         menu_item.cpp
+         menu_manager.cpp
+         metadb.cpp
+         metadb_handle.cpp
+         metadb_handle_list.cpp
+         output.cpp
+     4>Lib:
+         pfc.vcxproj -> D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\pfc.lib
+     5>ClCompile:
+         packet_decoder.cpp
+         playable_location.cpp
+         playback_control.cpp
+         playlist.cpp
+         playlist_loader.cpp
+         popup_message.cpp
+         preferences_page.cpp
+         replaygain.cpp
+         replaygain_info.cpp
+         service.cpp
+         tag_processor.cpp
+         tag_processor_id3v2.cpp
+         threaded_process.cpp
+         titleformat.cpp
+         track_property.cpp
+         ui.cpp
+         ui_element.cpp
+         utility.cpp
+     3>FinalizeBuildStatus:
+         Deleting file "x64\Release\foobar20.71AD2674.tlog\unsuccessfulbuild".
+         Touching "x64\Release\foobar20.71AD2674.tlog\foobar2000_component_client.lastbuildstate".
+     3>Done Building Project "D:\a\foo_ui_webview2\foo_ui_webview2\lib\foobar2000_sdk\foobar2000\foobar2000_component_client\foobar2000_component_client.vcxproj" (default targets).
+     4>FinalizeBuildStatus:
+         Deleting file "x64\Release\pfc.tlog\unsuccessfulbuild".
+         Touching "x64\Release\pfc.tlog\pfc.lastbuildstate".
+     4>Done Building Project "D:\a\foo_ui_webview2\foo_ui_webview2\lib\foobar2000_sdk\pfc\pfc.vcxproj" (default targets).
+     5>Lib:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\Lib.exe /OUT:"D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\foobar2000_SDK.lib" /NOLOGO /MACHINE:X64 /LTCG x64\Release\abort_callback.obj
+         x64\Release\advconfig.obj
+         x64\Release\album_art.obj
+         x64\Release\app_close_blocker.obj
+         x64\Release\audio_chunk.obj
+         x64\Release\audio_chunk_channel_config.obj
+         x64\Release\cfg_var.obj
+         x64\Release\cfg_var_legacy.obj
+         x64\Release\chapterizer.obj
+         x64\Release\commandline.obj
+         x64\Release\commonObjects.obj
+         x64\Release\completion_notify.obj
+         x64\Release\componentversion.obj
+         x64\Release\configStore.obj
+         x64\Release\config_io_callback.obj
+         x64\Release\config_object.obj
+         x64\Release\console.obj
+         x64\Release\dsp.obj
+         x64\Release\dsp_manager.obj
+         x64\Release\file_cached_impl.obj
+         x64\Release\file_info.obj
+         x64\Release\file_info_const_impl.obj
+         x64\Release\file_info_impl.obj
+         x64\Release\file_info_merge.obj
+         x64\Release\file_operation_callback.obj
+         x64\Release\filesystem.obj
+         x64\Release\filesystem_helper.obj
+         x64\Release\foosort.obj
+         x64\Release\fsItem.obj
+         x64\Release\guids.obj
+         x64\Release\hasher_md5.obj
+         x64\Release\image.obj
+         x64\Release\input.obj
+         x64\Release\input_file_type.obj
+         x64\Release\link_resolver.obj
+         x64\Release\mainmenu.obj
+         x64\Release\main_thread_callback.obj
+         x64\Release\mem_block_container.obj
+         x64\Release\menu_helpers.obj
+         x64\Release\menu_item.obj
+         x64\Release\menu_manager.obj
+         x64\Release\metadb.obj
+         x64\Release\metadb_handle.obj
+         x64\Release\metadb_handle_list.obj
+         x64\Release\output.obj
+         x64\Release\packet_decoder.obj
+         x64\Release\playable_location.obj
+         x64\Release\playback_control.obj
+         x64\Release\playlist.obj
+         x64\Release\playlist_loader.obj
+         x64\Release\popup_message.obj
+         x64\Release\preferences_page.obj
+         x64\Release\replaygain.obj
+         x64\Release\replaygain_info.obj
+         x64\Release\service.obj
+         x64\Release\stdafx.obj
+         x64\Release\tag_processor.obj
+         x64\Release\tag_processor_id3v2.obj
+         x64\Release\threaded_process.obj
+         x64\Release\titleformat.obj
+         x64\Release\track_property.obj
+         x64\Release\ui.obj
+         x64\Release\ui_element.obj
+         x64\Release\utility.obj
+         foobar2000_SDK.vcxproj -> D:\a\foo_ui_webview2\foo_ui_webview2\automix\x64\Release\foobar2000_SDK.lib
+       FinalizeBuildStatus:
+         Deleting file "x64\Release\foobar2000_SDK.tlog\unsuccessfulbuild".
+         Touching "x64\Release\foobar2000_SDK.tlog\foobar2000_SDK.lastbuildstate".
+     5>Done Building Project "D:\a\foo_ui_webview2\foo_ui_webview2\lib\foobar2000_sdk\foobar2000\SDK\foobar2000_SDK.vcxproj" (default targets).
+     1>Project "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.sln" (1) is building "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.vcxproj" (2) on node 1 (default targets).
+     2>PrepareForBuild:
+         Creating directory "D:\a\foo_ui_webview2\foo_ui_webview2\automix\obj\Release_x64\".
+         Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+         Creating directory "D:\a\foo_ui_webview2\foo_ui_webview2\automix\bin\Release_x64\".
+         Creating directory "D:\a\foo_ui_webview2\foo_ui_webview2\automix\obj\Release_x64\foo_dsp_automix.tlog\".
+       InitializeBuildStatus:
+         Creating "D:\a\foo_ui_webview2\foo_ui_webview2\automix\obj\Release_x64\foo_dsp_automix.tlog\unsuccessfulbuild" because "AlwaysCreate" was specified.
+         Touching "D:\a\foo_ui_webview2\foo_ui_webview2\automix\obj\Release_x64\foo_dsp_automix.tlog\unsuccessfulbuild".
+       ClCompile:
+         C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX86\x64\CL.exe /c /ID:\a\foo_ui_webview2\foo_ui_webview2\automix\..\lib\foobar2000_sdk /Zi /nologo /W3 /WX- /diagnostics:column /MP /O2 /Oi /GL /D WIN32 /D _WINDOWS /D _USRDLL /D _WINDLL /D _UNICODE /D UNICODE /Gm- /EHsc /MD /GS /Gy /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /std:c++20 /permissive- /Fo"D:\a\foo_ui_webview2\foo_ui_webview2\automix\obj\Release_x64\\" /Fd"D:\a\foo_ui_webview2\foo_ui_webview2\automix\obj\Release_x64\vc143.pdb" /external:W3 /Gd /TP /FC /errorReport:queue /utf-8 src\automix.cpp
+         automix.cpp
+         WARNING: release build without NDEBUG
+     2>D:\a\foo_ui_webview2\foo_ui_webview2\automix\src\automix.cpp(127,43): error C2275: 'int64_t': expected an expression instead of a type [D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.vcxproj]
+     2>D:\a\foo_ui_webview2\foo_ui_webview2\automix\src\automix.cpp(127,23): error C2737: 'outLen': const object must be initialized [D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.vcxproj]
+     2>Done Building Project "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.vcxproj" (default targets) -- FAILED.
+     1>Done Building Project "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.sln" (default targets) -- FAILED.
+
+Build FAILED.
+
+       "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.sln" (default target) (1) ->
+       "D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.vcxproj" (default target) (2) ->
+       (ClCompile target) -> 
+         D:\a\foo_ui_webview2\foo_ui_webview2\automix\src\automix.cpp(127,43): error C2275: 'int64_t': expected an expression instead of a type [D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.vcxproj]
+         D:\a\foo_ui_webview2\foo_ui_webview2\automix\src\automix.cpp(127,23): error C2737: 'outLen': const object must be initialized [D:\a\foo_ui_webview2\foo_ui_webview2\automix\foo_dsp_automix.vcxproj]
+
+    0 Warning(s)
+    2 Error(s)
+
+Time Elapsed 00:00:22.00
