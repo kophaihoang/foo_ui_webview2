@@ -247,6 +247,20 @@ describe('goTo：浏览一步', () => {
     expect(elements[3]?.style.transform).toBe('translateX(0px) scale(1)');
   });
 
+  it('while gliding the covers lean into the motion and sink back, then straighten on arrival', () => {
+    const { engine, elements, advance } = setup(5);
+    engine.jumpTo(2);
+    engine.goTo(3);
+    advance(48);
+    const center = elements[3] as CardElement;
+    expect(tilted(center)).toBe(true);
+    expect(Number(/scale\(([\d.]+)\)/.exec(center.style.transform)?.[1])).toBeLessThan(
+      slotAt(3 - engine.position()).size,
+    );
+    advance(MAX_GLIDE_MS);
+    expect(center.style.transform).toBe('translateX(0px) scale(1)');
+  });
+
   it('中途改目标：从当时的位置接着走，位置不跳', () => {
     const { engine, advance } = setup(8);
     engine.jumpTo(2);

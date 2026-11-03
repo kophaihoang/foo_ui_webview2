@@ -113,6 +113,11 @@ const GATHER_MS = 220;
 /** After a fold the fan-out starts this soon, ms (entering waits for the shared cover glide instead) */
 const REGATHER_DELAY_MS = 40;
 const LIT_EPSILON = 0.005;
+/** While gliding the covers lean into the motion and sink back a little, by speed (items/s) */
+const LEAN_DEG_PER_SPEED = 2;
+const LEAN_MAX_DEG = 12;
+const SINK_PER_SPEED = 0.012;
+const SINK_MAX = 0.08;
 
 export function createCoverflowEngine(
   clock: EngineClock,
@@ -156,10 +161,23 @@ export function createCoverflowEngine(
     );
   }
 
-  function write(card: EngineCard, d: number, now: number, brightness: number): void {
+  function write(
+    card: EngineCard,
+    d: number,
+    now: number,
+    brightness: number,
+    velocity: number,
+  ): void {
     const slot = slotAt(d);
+    const lean = Math.max(-LEAN_MAX_DEG, Math.min(LEAN_MAX_DEG, -velocity * LEAN_DEG_PER_SPEED));
+    const sink = 1 - Math.min(SINK_MAX, Math.abs(velocity) * SINK_PER_SPEED);
     // 间距在入场插值之前收紧，飞入的终点才是收紧后的槽位
-    let pose = { ...slot, offset: slot.offset * geometry.spread };
+    let pose = {
+      ...slot,
+      offset: slot.offset * geometry.spread,
+      tilt: slot.tilt + lean,
+      size: slot.size * sink,
+    };
     let factor = 1;
     if (gather && !card.current && onSide(card.index, gather.center, gather.sides)) {
       const t = Math.min(1, (now - gather.start) / GATHER_MS);
@@ -199,6 +217,7 @@ export function createCoverflowEngine(
 
   function paintAt(now: number): void {
     const pos = positionAt(now);
+    const velocity = frozenAt !== null ? 0 : velocityAt(now);
     const dt = Number.isFinite(lastPaint) ? Math.min(100, Math.max(0, now - lastPaint)) : 0;
     lastPaint = now;
     // 减弱动效与窗口看不见时不过渡，直接到位；退场期间遮罩定住不变
@@ -210,7 +229,7 @@ export function createCoverflowEngine(
       const stepped = before === undefined ? goal : before + (goal - before) * rate;
       const next = Math.abs(goal - stepped) < LIT_EPSILON ? goal : stepped;
       lit.set(card.key, next);
-      write(card, card.index - pos, now, next);
+      write(card, card.index - pos, now, next, velocity);
     }
   }
 
