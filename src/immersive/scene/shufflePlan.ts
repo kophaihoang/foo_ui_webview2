@@ -1,6 +1,7 @@
 import { fb } from 'foo-webview-sdk/bridge';
 import { atom, type Atom } from 'jotai/vanilla';
 import { settle } from '../../host/hostCall.ts';
+import { trackPathOf } from '../../host/libraryContract.ts';
 import type { Store } from '../../kit/store.ts';
 import { currentTrackAtom, playbackOrderAtom } from '../../playback/playback.ts';
 import { queueViewAtom } from '../../playback/queue/queueState.ts';
@@ -125,6 +126,47 @@ function deal(count: number, avoidFirst: readonly PlanEntry[]): PlanEntry[] {
     rows.push(rows.shift() as number);
   }
   return rows.map((row) => withId({ row }));
+}
+
+/** AutoMix beat-matches two songs whose tempos are this close (its default setting) */
+const TEMPO_FIT = 0.08;
+/** How many upcoming songs are looked through for one whose tempo fits the playing song */
+const TEMPO_AHEAD = 16;
+/** Tempo the AutoMix component knows for a track (measured, BPM tag or Deezer); empty when unknown */
+const BPM_FIELD = '%automix_bpm%';
+
+/** Index of the first tempo in `upcoming` close enough to `current` to beat-match; null when none is */
+export function firstTempoFit(
+  current: number,
+  upcoming: readonly number[],
+  fit = TEMPO_FIT,
+): number | null {
+  if (!(current > 0)) return null;
+  const index = upcoming.findIndex((bpm) => bpm > 0 && Math.abs(bpm / current - 1) <= fit);
+  return index < 0 ? null : index;
+}
+
+/** The plan with the first upcoming song whose tempo fits the playing one moved up to be next */
+async function pickByTempo(plan: ShufflePlan, playingPath: string): Promise<ShufflePlan> {
+  const positions: number[] = [];
+  const paths: string[] = [];
+  const end = Math.min(plan.order.length, plan.cursor + TEMPO_AHEAD);
+  for (let position = plan.cursor; position < end; position++) {
+    const track = trackAt(plan, plan.order[position]);
+    if (!track) continue;
+    positions.push(position);
+    paths.push(trackPathOf(track));
+  }
+  if (positions.length === 0) return plan;
+  const answer = await settle(() => fb.titleformat.evalBatch(BPM_FIELD, [playingPath, ...paths]));
+  if (!answer?.success) return plan;
+  const bpms = answer.results.map((row) => Number.parseFloat(row.result ?? ''));
+  const fit = firstTempoFit(bpms[0] ?? Number.NaN, bpms.slice(1));
+  const position = fit === null ? undefined : positions[fit];
+  if (position === undefined || position === plan.cursor) return plan;
+  const order = [...plan.order];
+  moveInPlan(order, plan.cursor, position, 0);
+  return { ...plan, order };
 }
 
 const keyOf = (entry: PlanEntry): string =>
@@ -275,6 +317,8 @@ export function startShufflePlan(store: Store): ShufflePlanService {
   let reading = false;
   /** A song picked in the coverflow, until it starts playing */
   let jump: { position: number } | null = null;
+  /** The playing song whose follower was already chosen by tempo (once per song, so hand changes stay) */
+  let tempoPickedFor: string | null = null;
 
   const isRandom = () => {
     const order = store.get(playbackOrderAtom);
@@ -347,6 +391,21 @@ export function startShufflePlan(store: Store): ShufflePlanService {
       plan = { ...plan, order: [...plan.order, ...deal(plan.count, plan.order.slice(-8))] };
     }
     store.set(planAtom, plan);
+
+    // AutoMix can beat-match only songs of close tempo: bring the first fitting upcoming song forward
+    if (!jump && tempoPickedFor !== current.handle) {
+      const picked = await pickByTempo(plan, trackPathOf(current));
+      if (disposed) return;
+      if (store.get(planAtom) !== plan) {
+        again = true;
+        return;
+      }
+      tempoPickedFor = current.handle;
+      if (picked !== plan) {
+        plan = picked;
+        store.set(planAtom, plan);
+      }
+    }
 
     const next = plan.order[plan.cursor];
     if (next === undefined) return;

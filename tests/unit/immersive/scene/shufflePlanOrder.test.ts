@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  firstTempoFit,
   planEntryFor,
   playingPosition,
   moveInPlan,
@@ -125,5 +126,19 @@ describe('planEntryFor / playingPosition', () => {
     expect(playingPosition(plan, 'h-c')).toBe(2);
     expect(playingPosition(plan, 'h-d')).toBe(3);
     expect(playingPosition(plan, 'h-x')).toBe(3);
+  });
+});
+
+describe('firstTempoFit: the next song AutoMix can beat-match', () => {
+  it('takes the first upcoming tempo within 8 %', () => {
+    expect(firstTempoFit(128, [86, 150, 124, 129])).toBe(2);
+  });
+
+  it('skips unknown tempos and finds none when nothing is close', () => {
+    expect(firstTempoFit(128, [Number.NaN, 0, 100, 160])).toBeNull();
+  });
+
+  it('does nothing while the playing song has no known tempo', () => {
+    expect(firstTempoFit(Number.NaN, [128])).toBeNull();
   });
 });
