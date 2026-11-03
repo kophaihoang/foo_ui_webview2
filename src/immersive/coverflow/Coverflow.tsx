@@ -37,7 +37,7 @@ import { playPlanOf, type PlayPlan } from './playPlan.ts';
 import { RENDER_RADIUS, coverflowLayout, inViewRange, visibleIndexes } from './slots.ts';
 
 /** 无交互自动回位至当前播放曲目的超时时间（毫秒） */
-const IDLE_MS = 3000;
+const IDLE_MS = 10_000;
 /** A dragged card this close to the bottom edge (share of the height, at least the minimum) sinks */
 const SINK_EDGE_SHARE = 0.12;
 const SINK_EDGE_MIN = 64;
