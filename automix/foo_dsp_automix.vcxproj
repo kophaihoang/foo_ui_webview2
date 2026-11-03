@@ -68,6 +68,7 @@
   <ItemGroup>
     <ClCompile Include="src\automix.cpp" />
     <ClCompile Include="src\beats.cpp" />
+    <ClCompile Include="src\bpmstore.cpp" />
     <ClCompile Include="src\transition.cpp" />
   </ItemGroup>
   <!-- third-party, fetched into ext\ by fetch-libs.ps1 -->
@@ -86,6 +87,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\beats.h" />
+    <ClInclude Include="src\bpmstore.h" />
     <ClInclude Include="src\transition.h" />
     <ClInclude Include="src\mix.h" />
   </ItemGroup>

@@ -23,10 +23,11 @@
 #include <vector>
 
 #include "beats.h"
+#include "bpmstore.h"
 #include "mix.h"
 #include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.2.2",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.3.0",
     "DJ-style transitions between tracks.\n"
     "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
     "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
@@ -247,6 +248,7 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
         if (beatMatch) {
             oldBeats = analyseBeats(old.data.data(), audible, channels, rate);
             oldPlan = planOldSide(old, end, oldBeats, s.bars);
+            if (oldBeats.steady()) learnBpm(current, oldBeats.bpm);
         }
         const int64_t plainStart = (std::max)(old.start, end - std::llround(s.seconds * rate));
         const int64_t earliest = oldPlan.overlapBeat >= 0 ? (std::min)(oldPlan.renderStart, plainStart) : plainStart;
@@ -301,6 +303,7 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
         auto late = [&] { return p.pos >= t.renderStart - (int64_t)rate; };
         if (beatMatch) {
             const Beats nextBeats = analyseBeats(head.data.data(), head.data.size() / channels, channels, head.rate);
+            if (nextBeats.steady()) learnBpm(next.handle, nextBeats.bpm);
             beat = beatTransition(old, oldBeats, oldPlan, head, skip, nextBeats, s, rs, t, why);
             if (beat && late()) {
                 beat = false;
