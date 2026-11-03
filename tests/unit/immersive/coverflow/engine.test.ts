@@ -334,6 +334,38 @@ describe('goTo：浏览一步', () => {
   });
 });
 
+describe('follow / release: the covers follow the fingers on a touchpad', () => {
+  it('the position is right where the fingers put it, and a goTo meanwhile does not glide', () => {
+    const { engine, advance } = setup(8);
+    engine.jumpTo(2);
+    engine.follow(2.3);
+    advance(16);
+    engine.follow(2.6);
+    engine.goTo(3);
+    advance(16);
+    expect(engine.position()).toBe(2.6);
+    expect(engine.velocity()).toBeGreaterThan(0);
+  });
+
+  it('released, the covers glide on with the fingers speed and settle on the target', () => {
+    let settled = 0;
+    const { engine, advance, hasFrame } = setup(8, { onSettle: () => settled++ });
+    engine.jumpTo(2);
+    for (let i = 1; i <= 4; i++) {
+      engine.follow(2 + i * 0.1);
+      advance(16);
+    }
+    const speed = engine.velocity();
+    engine.release(3);
+    expect(engine.velocity()).toBeCloseTo(speed, 5);
+    engine.goTo(3);
+    advance(MAX_GLIDE_MS);
+    expect(engine.position()).toBe(3);
+    expect(settled).toBe(1);
+    expect(hasFrame()).toBe(false);
+  });
+});
+
 describe('rekey：条目表重排后卡留在原地', () => {
   it('前面多了一条，选中项的下标后移，位置跟着，卡不动', () => {
     const { engine, elements, cards } = setup(3);

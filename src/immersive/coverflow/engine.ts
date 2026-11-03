@@ -73,6 +73,15 @@ export interface CoverflowEngine {
   jumpTo(target: number): void;
   /** 补间到 `target`；补间途中再调，从当时的位置和速度接着走，速度不跳 */
   goTo(target: number): void;
+  /** Speed of the position now, items/s */
+  velocity(): number;
+  /**
+   * Fingers on the touchpad: the position is put right at `pos` and follows them, no glide. The speed is
+   * measured from the moves. A `goTo` meanwhile only changes where the browse lands
+   */
+  follow(pos: number): void;
+  /** The fingers are off: glide from where they left to `target`, carrying their speed */
+  release(target: number): void;
   /** 条目表重排：先按键把位置接到新表上（卡留在原地），再补间到 `target` */
   rekey(previous: readonly string[], next: readonly string[], target: number): void;
   /** 进入：选中项 `center` 不飞，其余登记着的卡从左到右依次飞入；减弱动效时在槽位上淡入 */
@@ -126,6 +135,9 @@ const SINK_PER_SPEED = 0.04;
 const SINK_MAX = 0.18;
 const STRETCH_PER_SPEED = 0.035;
 const STRETCH_MAX = 0.18;
+/** Fingers resting on the touchpad: their measured speed fades with this time constant, ms */
+const HELD_SPEED_TAU_MS = 60;
+const HELD_MIN_DT_MS = 4;
 
 export function createCoverflowEngine(
   clock: EngineClock,
@@ -157,13 +169,22 @@ export function createCoverflowEngine(
 
   // 退场开始后位置定在原地：淡出就是原地淡出，不跟着选中项（关模式时选中会回到正在播放那一首）再滚
   let frozenAt: number | null = null;
-  const positionAt = (now: number) => frozenAt ?? (glide ? glideAt(glide, now) : rest);
-  const velocityAt = (now: number) => (glide ? glideVelocity(glide, now) : 0);
+  /** Fingers on the touchpad, see `follow` */
+  let held: { pos: number; velocity: number; time: number } | null = null;
+  const positionAt = (now: number) => frozenAt ?? held?.pos ?? (glide ? glideAt(glide, now) : rest);
+  // fingers that stopped moving bring the speed down, even with no event to tell
+  const velocityAt = (now: number) =>
+    held
+      ? held.velocity * Math.exp(-(now - held.time) / HELD_SPEED_TAU_MS)
+      : glide
+        ? glideVelocity(glide, now)
+        : 0;
   const litGoal = (card: EngineCard) => (card.index === rest ? 1 : 0);
 
   function animating(now: number): boolean {
     return (
       (glide !== null && !glideDone(glide, now)) ||
+      (frozenAt === null && held !== null) ||
       gather !== null ||
       (frozenAt === null && motion !== 0) ||
       (intro !== null && now - intro.start < intro.duration) ||
@@ -308,6 +329,12 @@ export function createCoverflowEngine(
    */
   function goTo(target: number, velocity?: number): void {
     if (frozenAt !== null) return;
+    if (held) {
+      rest = target;
+      return;
+    }
+    // already on its way there (a release picks the song after starting the glide)
+    if (velocity === undefined && glide?.to === target) return;
     const now = clock.now();
     if (!visible || reduced) {
       glide = null;
@@ -329,8 +356,41 @@ export function createCoverflowEngine(
 
   return {
     goTo: (target) => goTo(target),
+    velocity: () => velocityAt(clock.now()),
+    follow(pos) {
+      if (frozenAt !== null) return;
+      const now = clock.now();
+      const before = held ?? { pos: positionAt(now), velocity: velocityAt(now), time: now };
+      const dt = now - before.time;
+      // events come about every 8 ms; ones closer than that are merged into the next measure
+      if (held && dt < HELD_MIN_DT_MS) {
+        held = { ...held, pos };
+      } else {
+        const measured = dt > 0 ? ((pos - before.pos) / dt) * 1000 : before.velocity;
+        held = { pos, velocity: before.velocity * 0.5 + measured * 0.5, time: now };
+      }
+      glide = null;
+      schedule();
+    },
+    release(target) {
+      if (!held || frozenAt !== null) return;
+      const now = clock.now();
+      const from = held.pos;
+      const velocity = velocityAt(now);
+      held = null;
+      rest = target;
+      if (!visible || reduced || from === target) {
+        glide = null;
+        options.onSettle?.();
+        paintAt(now);
+        return;
+      }
+      glide = startGlide(from, target, now, velocity);
+      schedule();
+    },
     jumpTo(target) {
       glide = null;
+      held = null;
       rest = target;
     },
     setCards(next) {
@@ -360,6 +420,12 @@ export function createCoverflowEngine(
       if (frozenAt !== null) return;
       const now = clock.now();
       const velocity = velocityAt(now);
+      if (held) {
+        // the fingers carry on from the same cover in the new list
+        held = { ...held, pos: reanchor(previous, held.pos, next, target) };
+        rest = target;
+        return;
+      }
       rest = reanchor(previous, positionAt(now), next, target);
       glide = null;
       goTo(target, velocity);

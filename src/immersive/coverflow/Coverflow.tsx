@@ -43,6 +43,30 @@ const SINK_EDGE_SHARE = 0.12;
 const SINK_EDGE_MIN = 64;
 /** 前向预读深度增量；除两侧基础视界外，为补间动画预留额外缓冲卡片 */
 const EARLIER_AHEAD = RENDER_RADIUS * 2;
+/** Touchpad: swipe this many px to move one cover */
+const SWIPE_PX = 100;
+/** No swipe event for this long: the fingers (and the touchpad's own coasting) are done, ms */
+const SWIPE_END_MS = 90;
+/** On release the covers settle on the song this far ahead along the swipe speed, s */
+const SWIPE_AHEAD_S = 0.12;
+/** Past either end the covers stretch like a rubber band, at most this many covers */
+const RUBBER_MAX = 0.5;
+const WHEEL_LINE_PX = 100 / 3;
+
+/**
+ * A mouse wheel moves in whole lines of 100/3 px (or that times the screen scale) and never sideways;
+ * anything else is a touchpad. A touchpad taken for a mouse only falls back to stepping a song at a time
+ */
+function fromTouchpad(event: WheelEvent): boolean {
+  if (event.deltaMode !== 0) return false;
+  if (event.deltaX !== 0) return true;
+  const ratio = typeof window === 'undefined' ? 1 : window.devicePixelRatio;
+  const whole = (px: number) => {
+    const lines = Math.abs(px) / WHEEL_LINE_PX;
+    return lines >= 0.99 && Math.abs(lines - Math.round(lines)) < 0.02;
+  };
+  return !whole(event.deltaY) && !whole(event.deltaY / ratio);
+}
 
 const browserClock: EngineClock = {
   now: () => performance.now(),
@@ -146,6 +170,30 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
     touch();
   };
   const step = (delta: number) => selectIndex(selectedNow() + delta);
+
+  // ── touchpad: the covers follow the fingers, then glide on and settle on a song ──
+  const swipeEnd = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(swipeEnd.current), []);
+  const swipe = (px: number) => {
+    const last = store.get(coverflowItemsAtom).length - 1;
+    if (last < 0 || px === 0) return;
+    const pos = engine.position();
+    const over = pos < 0 ? -pos : pos > last ? pos - last : 0;
+    const outward = (pos <= 0 && px < 0) || (pos >= last && px > 0);
+    const give = outward ? Math.max(0, 0.4 * (1 - over / RUBBER_MAX)) : 1;
+    const next = pos + (px / SWIPE_PX) * give;
+    engine.follow(next);
+    const at = Math.min(last, Math.max(0, Math.round(next)));
+    if (at !== selectedNow()) selectIndex(at);
+    clearTimeout(swipeEnd.current);
+    swipeEnd.current = setTimeout(() => {
+      const end = store.get(coverflowItemsAtom).length - 1;
+      const ahead = engine.position() + engine.velocity() * SWIPE_AHEAD_S;
+      const target = Math.min(end, Math.max(0, Math.round(ahead)));
+      engine.release(target);
+      if (target !== selectedNow()) selectIndex(target);
+    }, SWIPE_END_MS);
+  };
 
   const perform = (plan: PlayPlan): Promise<boolean> => {
     if (plan.kind === 'handle') return queue.commands.playHandle(plan.handle);
@@ -543,6 +591,10 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
         onWheel={(event: WheelEvent) => {
           // two-finger swipe on a touchpad: sideways swipes move the covers too (right = next)
           const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+          if (fromTouchpad(event)) {
+            swipe(sideways ? event.deltaX : event.deltaY);
+            return;
+          }
           const steps = stepper({
             deltaY: sideways ? event.deltaX : event.deltaY,
             deltaMode: event.deltaMode,
