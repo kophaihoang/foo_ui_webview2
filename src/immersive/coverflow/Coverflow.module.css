@@ -93,6 +93,11 @@
   opacity: 1;
 }
 
+/* depth of field: the engine blurs the far covers (--blur, in steps); the dragged card below overrides it */
+.card[data-blur] {
+  filter: blur(var(--blur));
+}
+
 /* pick up a song: the card being dragged stays as a faint outline in its slot, a lifted copy follows the
    pointer and a bright bar marks the gap it will land in */
 .card[data-dragging] {

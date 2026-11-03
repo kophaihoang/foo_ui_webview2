@@ -137,6 +137,14 @@ const SINK_PER_SPEED = 0.04;
 const SINK_MAX = 0.18;
 const STRETCH_PER_SPEED = 0.035;
 const STRETCH_MAX = 0.18;
+/**
+ * Depth of field: covers past the first side slot blur by this many px per slot, at most `BLUR_MAX_PX`.
+ * It moves in steps of `BLUR_STEP_PX` and is written only when the step changes: a blur that changes every
+ * frame is costly
+ */
+const BLUR_PER_SLOT_PX = 1.5;
+const BLUR_MAX_PX = 3;
+const BLUR_STEP_PX = 0.5;
 /** Fingers resting on the touchpad: their measured speed fades with this time constant, ms */
 const HELD_SPEED_TAU_MS = 60;
 const HELD_MIN_DT_MS = 4;
@@ -274,6 +282,19 @@ export function createCoverflowEngine(
     style.setProperty('--shade', String(shade));
     style.setProperty('--center', String(Math.max(0, 1 - Math.abs(d))));
     card.element.dataset.side = d < 0 ? 'left' : 'right';
+    const blur =
+      Math.round(
+        Math.min(BLUR_MAX_PX, Math.max(0, Math.abs(d) - 1) * BLUR_PER_SLOT_PX) / BLUR_STEP_PX,
+      ) * BLUR_STEP_PX;
+    const { dataset } = card.element;
+    if ((dataset.blur ?? '0') !== String(blur)) {
+      if (blur > 0) {
+        style.setProperty('--blur', `${blur}px`);
+        dataset.blur = String(blur);
+      } else {
+        delete dataset.blur;
+      }
+    }
   }
 
   function paintAt(now: number): void {

@@ -392,6 +392,24 @@ describe('hover: the card under the pointer lifts toward the viewer', () => {
   });
 });
 
+describe('depth of field: far covers blur in steps', () => {
+  it('the selected and the next covers are sharp, farther ones blur up to 3 px', () => {
+    const { engine, elements } = setup(7);
+    engine.jumpTo(3);
+    engine.paint();
+    expect(elements.map((element) => element.dataset.blur)).toEqual([
+      '3',
+      '1.5',
+      undefined,
+      undefined,
+      undefined,
+      '1.5',
+      '3',
+    ]);
+    expect((elements[0] as FakeCard).vars['--blur']).toBe('3px');
+  });
+});
+
 describe('rekey：条目表重排后卡留在原地', () => {
   it('前面多了一条，选中项的下标后移，位置跟着，卡不动', () => {
     const { engine, elements, cards } = setup(3);
