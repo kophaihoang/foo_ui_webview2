@@ -1,38 +1,22 @@
-// AutoMix: DJ-style transitions between consecutive tracks.
+// AutoMix: fade out the end of a track and fade in the start of the next one.
 //
-// How it works without adding latency:
-//  - At the start of each track a worker thread decodes the last 60 s of it, finds where the sound ends
-//    and, for beat matching, its beats and bars.
-//  - About 20 s before the transition, it asks the main thread which track plays next (queue first, then
-//    the next playlist row), decodes that track's head from the file itself and renders the whole
-//    transition ahead of time (transition.cpp): beat-matched when both tracks have a steady beat at
-//    close tempos, otherwise a plain equal-power overlap.
-//  - From the transition's first frame on, the DSP plays the rendered audio instead of the live track.
-//  - When foobar2000 then delivers the next track for real, the DSP drops the part that was already heard.
-// Anything unexpected (prediction wrong, decode error, seek, different channel layout) falls back to
-// a plain transition or no transition, with the reason written to the Console.
+// Only the volume of the live audio is changed, in place: nothing is buffered, dropped or inserted, so the
+// DSP adds no latency and can't make playback stutter. A low-priority worker finds where each track's sound
+// really ends (trailing silence), so the fade-out ends there instead of on the silence.
+// The beat-matched version (render ahead, qm-dsp, SoundTouch) is in the git history of this branch.
 #include <foobar2000/SDK/foobar2000.h>
 
 #include <algorithm>
 #include <atomic>
-#include <cstring>
-#include <functional>
+#include <cmath>
 #include <memory>
-#include <stdexcept>
 #include <thread>
-#include <vector>
 
-#include "beats.h"
-#include "bpmstore.h"
 #include "mix.h"
-#include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.4.0",
-    "DJ-style transitions between tracks.\n"
-    "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
-    "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
-    "Settings: Preferences > Advanced > Playback > AutoMix.\n\n"
-    "Uses qm-dsp (GPL-2.0-or-later) and SoundTouch (LGPL-2.1-or-later).\n"
+DECLARE_COMPONENT_VERSION("AutoMix", "0.5.0",
+    "Fades out the end of a track and fades in the next one when playback moves on by itself.\n"
+    "Trailing silence is taken into account. Settings: Preferences > Advanced > Playback > AutoMix.\n\n"
     "License: GPL-3.0-or-later");
 VALIDATE_COMPONENT_FILENAME("foo_dsp_automix.dll");
 
@@ -42,36 +26,17 @@ using namespace automix;
 
 constexpr GUID guid_dsp = {0x1cbe0af2, 0xf09b, 0x41c9, {0xb7, 0x6e, 0x3c, 0x6a, 0x29, 0x65, 0x4a, 0x2d}};
 constexpr GUID guid_branch = {0xae12d125, 0x3ba8, 0x48f0, {0x9d, 0x95, 0x21, 0x58, 0x36, 0xde, 0x57, 0xc3}};
-constexpr GUID guid_seconds = {0x7c719b04, 0xff1e, 0x47f9, {0x9b, 0x16, 0xda, 0xd6, 0x65, 0xd3, 0xa1, 0x7f}};
-constexpr GUID guid_basscut = {0x1a766c43, 0x9487, 0x4d1b, {0x89, 0x46, 0x90, 0x45, 0x95, 0x3c, 0x8f, 0xf6}};
+constexpr GUID guid_fadeout = {0x3e8c1f57, 0x2b6d, 0x4a90, {0x8c, 0x14, 0x7a, 0xd2, 0x09, 0x5e, 0xb3, 0x61}};
+constexpr GUID guid_fadein = {0x9b41d6a2, 0x5f37, 0x4e1c, {0xa8, 0x2e, 0x13, 0xc7, 0x6d, 0x90, 0x4b, 0xf5}};
 constexpr GUID guid_silence = {0xbac54e6b, 0x5046, 0x49cd, {0xb2, 0x41, 0x13, 0x5a, 0x33, 0x22, 0xdd, 0xb4}};
-constexpr GUID guid_beatmatch = {0x5e0f3c21, 0x7d4a, 0x4b9e, {0xa1, 0x3c, 0x6f, 0x0d, 0x92, 0x47, 0xb8, 0x15}};
-constexpr GUID guid_bars = {0x8a2d7e64, 0x1c3b, 0x4f05, {0x96, 0x8e, 0x24, 0xc1, 0x5a, 0x7b, 0x03, 0xd9}};
-constexpr GUID guid_bpmdiff = {0xd47b1a90, 0x6e25, 0x4c38, {0x8f, 0x71, 0x0b, 0xe3, 0x59, 0x2c, 0xa6, 0x4e}};
 
 advconfig_branch_factory g_branch("AutoMix", guid_branch, advconfig_branch::guid_branch_playback, 0);
-advconfig_checkbox_factory g_cfgBeatMatch("Beat matching", guid_beatmatch, guid_branch, 0, true);
-advconfig_integer_factory g_cfgBars("Beat-matched overlap (bars)", guid_bars, guid_branch, 1, 8, 4, 16);
-advconfig_integer_factory g_cfgBpmDiff("Beat matching: largest tempo difference (%)", guid_bpmdiff, guid_branch, 2, 8, 1, 20);
-advconfig_integer_factory g_cfgSeconds("Plain transition length (seconds)", guid_seconds, guid_branch, 3, 8, 4, 16);
-advconfig_integer_factory g_cfgBassCut("Plain transition: bass cut on the outgoing track (%)", guid_basscut, guid_branch, 4, 70, 0, 100);
-advconfig_integer_factory g_cfgSilence("Silence threshold (dB below full scale)", guid_silence, guid_branch, 5, 50, 30, 90);
+advconfig_integer_factory g_cfgFadeOut("Fade-out length (seconds)", guid_fadeout, guid_branch, 0, 5, 1, 15);
+advconfig_integer_factory g_cfgFadeIn("Fade-in length (seconds)", guid_fadein, guid_branch, 1, 2, 0, 10);
+advconfig_integer_factory g_cfgSilence("Silence threshold (dB below full scale)", guid_silence, guid_branch, 2, 50, 30, 90);
 
-constexpr double kTailScanSeconds = 60;  // how much of the outgoing track's end is analysed
-constexpr double kHeadSearchSeconds = 30;  // longest leading silence we skip in the next track
-constexpr double kHeadSeconds = 60;  // how much of the next track is decoded after its leading silence
-constexpr double kPrepareLeadSeconds = 20;  // the next track is predicted and decoded this long before the mix
-constexpr double kRecheckLeadSeconds = 2;  // ...and checked once more this long before
-constexpr double kLastAskSeconds = 4;  // an unknown next track is asked for again until this long before the plain transition
-constexpr double kShortestSeconds = 2;  // a transition prepared late is shortened, but not below this
-constexpr double kSettleSeconds = 10;  // a track's analysis starts this long after it starts
-
-void log(const char* msg) { FB2K_console_formatter() << "AutoMix: " << msg; }
-
-struct Failure : std::runtime_error {
-    explicit Failure(const char* why) : std::runtime_error(why) {}
-    explicit Failure(const pfc::string_base& why) : std::runtime_error(why.get_ptr()) {}
-};
+constexpr double kTailScanSeconds = 30;  // where the sound ends is looked for this far from the end
+constexpr double kSettleSeconds = 5;  // the scan waits this long after a track starts (track changes are busy)
 
 // ---- seek position: the DSP is flushed on seek but not told where to; the main thread is ----
 
@@ -97,272 +62,42 @@ public:
 };
 play_callback_static_factory_t<seek_watch> g_seekWatch;
 
-// ---- main thread helpers ----
+// ---- where a track's sound ends ----
 
-// Runs `f` on the main thread and waits for it, abortably (never blocks the main thread on us).
-template <typename T>
-T inMain(std::function<T()> f, abort_callback& abort) {
-    struct Box {
-        std::atomic<bool> done{false};
-        T value{};
-    };
-    auto box = std::make_shared<Box>();
-    fb2k::inMainThread([box, f] {
-        try {
-            box->value = f();
-        } catch (...) {
-        }
-        box->done = true;
-    });
-    while (!box->done) abort.sleep(0.02);
-    return box->value;
-}
-
-struct NextTrack {
-    metadb_handle_ptr handle;
-    audio_sample scale = 1;  // ReplayGain scale the player will apply to it
-    pfc::string8 why;  // set when there is no usable prediction
-};
-
-NextTrack predictNext(const metadb_handle_ptr& current) {
-    NextTrack r;
-    auto pc = playback_control::get();
-    metadb_handle_ptr playing;
-    if (!pc->get_now_playing(playing) || playing != current) {
-        r.why = "bài DSP đang xử lý không phải bài đang phát (đang convert?)";
-        return r;
-    }
-    auto pm = playlist_manager::get();
-    pfc::list_t<t_playback_queue_item> queue;
-    pm->queue_get_contents(queue);
-    if (queue.get_count() > 0) {
-        r.handle = queue[0].m_handle;
-    } else if (pc->get_stop_after_current()) {
-        r.why = "đang bật Stop after current";
-    } else {
-        size_t pl, idx;
-        if (!pm->get_playing_item_location(&pl, &idx)) {
-            r.why = "queue trống và bài đang phát không nằm trong playlist nào";
-            return r;
-        }
-        const size_t count = pm->playlist_get_item_count(pl);
-        const char* order = pm->playback_order_get_name(pm->playback_order_get_active());
-        const bool isDefault = !strcmp(order, "Default");
-        if (isDefault && idx + 1 < count) r.handle = pm->playlist_get_item_handle(pl, idx + 1);
-        else if (!strcmp(order, "Repeat (playlist)")) r.handle = pm->playlist_get_item_handle(pl, (idx + 1) % count);
-        else if (!strcmp(order, "Repeat (track)")) r.handle = current;
-        else if (isDefault) r.why = "đã tới cuối playlist";
-        else r.why = (pfc::string_formatter()._formatter() << "queue trống và thứ tự phát \"" << order << "\" không đoán trước được bài kế").get_ptr();
-    }
-    if (r.handle.is_valid()) r.scale = replaygain_manager::get()->core_settings_query_scale(r.handle);
-    return r;
-}
-
-// ---- the plan for one track, shared between the DSP and its worker ----
-
-struct Plan {
+struct Tail {
     abort_callback_impl abort;
-    std::atomic<int64_t> pos{-1};  // DSP decode position in frames of the current track, -1 unknown
-
-    // written by the worker before `ready` is set, read-only afterwards
-    std::atomic<bool> ready{false};
-    metadb_handle_ptr next;
-    int64_t renderStart = 0;  // frame of the current track where `out` takes over
-    int64_t newResume = 0;  // frame of the next track (its own rate) where its live playback carries on
-    unsigned nextRate = 0;
-    std::vector<float> out;  // the rendered transition, current track's rate and channels
+    std::atomic<int64_t> soundEnd{-1};  // frame, -1 until known
 };
 
-void waitForPos(Plan& p, int64_t target) {
-    for (;;) {
-        const int64_t pos = p.pos;
-        if (pos >= 0 && pos >= target) return;
-        p.abort.sleep(0.1);
-    }
-}
-
-input_decoder::ptr openDecoder(const metadb_handle_ptr& track, unsigned flags, abort_callback& abort) {
-    input_decoder::ptr dec;
-    input_entry::g_open_for_decoding(dec, nullptr, track->get_path(), abort);
-    dec->initialize(track->get_subsong_index(), flags, abort);
-    return dec;
-}
-
-// Analysis and rendering work in float (half the memory); the player's audio_sample is converted at the edges.
-std::vector<float> resample(std::vector<float> const& in, unsigned channels, unsigned channelConfig,
-    unsigned from, unsigned to, const metadb_handle_ptr& track) {
-    service_ptr_t<dsp> rs;
-    if (!resampler_entry::g_create(rs, from, to, 1.0f))
-        throw Failure(pfc::string_formatter()._formatter() << "không có bộ đổi sample rate cho " << from << " → " << to << " Hz");
-    dsp_chunk_list_impl list;
-    const std::vector<audio_sample> wide(in.begin(), in.end());
-    list.insert_item(0, wide.size())->set_data(wide.data(), wide.size() / channels, channels, from, channelConfig);
-    rs->run(&list, track, dsp::END_OF_TRACK | dsp::FLUSH);
-    std::vector<float> out;
-    for (size_t i = 0; i < list.get_count(); ++i) {
-        const audio_chunk* c = list.get_item(i);
-        if (c->get_srate() != to || c->get_channels() != channels) throw Failure("bộ đổi sample rate trả về sai định dạng");
-        out.insert(out.end(), c->get_data(), c->get_data() + c->get_sample_count() * channels);
-    }
-    return out;
-}
-
-void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rate, unsigned channels,
-    unsigned channelConfig) {
-    Plan& p = *plan;
-    abort_callback& abort = p.abort;
-    // stay out of the way of playback: a track change is busy (the next file opens, the theme decodes it
-    // for its waveform), so the analysis waits a little and never competes with the playback thread
+void findSoundEnd(std::shared_ptr<Tail> tail, metadb_handle_ptr track, unsigned rate) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     try {
-        abort.sleep(kSettleSeconds);
-        Settings s;
-        s.seconds = (double)g_cfgSeconds.get();
-        s.bassCut = (double)g_cfgBassCut.get() / 100;
-        s.bars = (int)g_cfgBars.get();
-        s.maxBpmDiff = (double)g_cfgBpmDiff.get() / 100;
-        const bool beatMatch = g_cfgBeatMatch.get();
-        const double threshold = dbToAmp(-(double)g_cfgSilence.get());
-
-        // 1. the end of the current track, at the level the player uses
-        const double length = current->get_length();
-        if (length <= 0) throw Failure("không biết độ dài bài");
-        if (length < 3 * s.seconds) throw Failure("bài quá ngắn so với độ dài chuyển");
-        const audio_sample curScale = inMain<audio_sample>(
-            [current] { return replaygain_manager::get()->core_settings_query_scale(current); }, abort);
-        auto dec = openDecoder(current, input_flag_no_looping, abort);
-        if (!dec->can_seek()) throw Failure("không tua được trong file để đọc đuôi bài");
+        tail->abort.sleep(kSettleSeconds);
+        const double length = track->get_length();
+        if (length <= 0) return;
+        input_decoder::ptr dec;
+        input_entry::g_open_for_decoding(dec, nullptr, track->get_path(), tail->abort);
+        dec->initialize(track->get_subsong_index(), input_flag_no_looping, tail->abort);
+        if (!dec->can_seek()) return;
         const double from = (std::max)(0.0, length - kTailScanSeconds);
-        dec->seek(from, abort);
-        Audio old;
-        old.rate = rate;
-        old.channels = channels;
-        old.start = std::llround(from * rate);
+        dec->seek(from, tail->abort);
+        const double threshold = dbToAmp(-(double)g_cfgSilence.get());
+        int64_t frame = std::llround(from * rate), end = -1;
         audio_chunk_impl chunk;
-        while (dec->run(chunk, abort)) {
-            if (chunk.get_srate() != rate || chunk.get_channels() != channels) throw Failure("định dạng đổi giữa bài");
-            old.data.insert(old.data.end(), chunk.get_data(), chunk.get_data() + chunk.get_sample_count() * channels);
+        while (dec->run(chunk, tail->abort)) {
+            if (chunk.get_srate() != rate) return;
+            const size_t e = audibleEnd(chunk.get_data(), chunk.get_sample_count(), chunk.get_channels(), threshold);
+            if (e > 0) end = frame + (int64_t)e;
+            frame += (int64_t)chunk.get_sample_count();
         }
-        dec.release();
-        for (auto& x : old.data) x *= (float)curScale;
-        const size_t audible = audibleEnd(old.data.data(), old.data.size() / channels, channels, threshold);
-        if (audible == 0) throw Failure("60 giây cuối bài im lặng hoàn toàn");
-        const int64_t end = old.start + (int64_t)audible;
-
-        Beats oldBeats;
-        OldPlan oldPlan;
-        if (beatMatch) {
-            oldBeats = analyseBeats(old.data.data(), audible, channels, rate);
-            oldPlan = planOldSide(old, end, oldBeats, s.bars);
-            if (oldBeats.steady()) learnBpm(current, oldBeats.bpm);
-        }
-        // a song loud to its last note gets a short overlap, a quiet outro a longer one (up to the setting)
-        const double outro = quietOutroSeconds(old, end);
-        s.seconds = std::clamp(outro, kShortestSeconds, s.seconds);
-        const int64_t plainStart = (std::max)(old.start, end - std::llround(s.seconds * rate));
-        const int64_t earliest = oldPlan.ok ? (std::min)(oldPlan.renderStart, plainStart) : plainStart;
-
-        // 2. which track comes next
-        waitForPos(p, earliest - (int64_t)(kPrepareLeadSeconds * rate));
-        // the queue may still get its next song (the theme fills it), so keep asking until shortly before
-        NextTrack next;
-        for (;;) {
-            next = inMain<NextTrack>([current] { return predictNext(current); }, abort);
-            if (next.handle.is_valid()) break;
-            if (p.pos >= plainStart - (int64_t)(kLastAskSeconds * rate))
-                throw Failure(pfc::string_formatter()._formatter() << "không đoán được bài kế: " << next.why);
-            abort.sleep(1.0);
-        }
-
-        // 3. its head, from the very start so beat positions are track positions
-        auto nd = openDecoder(next.handle, input_flag_simpledecode, abort);
-        Audio head;
-        head.channels = channels;
-        int64_t skip = -1;
-        while (nd->run(chunk, abort)) {
-            if (head.rate == 0) {
-                head.rate = chunk.get_srate();
-                if (chunk.get_channels() != channels || chunk.get_channel_config() != channelConfig)
-                    throw Failure(pfc::string_formatter()._formatter() << "số kênh khác nhau (" << channels << " và " << chunk.get_channels() << ")");
-            }
-            if (chunk.get_srate() != head.rate) throw Failure("bài kế đổi sample rate ở đoạn đầu");
-            const size_t n = chunk.get_sample_count();
-            const int64_t at = head.end();
-            head.data.insert(head.data.end(), chunk.get_data(), chunk.get_data() + n * channels);
-            if (skip < 0) {
-                const size_t first = firstAudible(chunk.get_data(), n, channels, threshold / next.scale);
-                if (first < n) skip = at + (int64_t)first;
-                else if (head.end() > kHeadSearchSeconds * head.rate) throw Failure("30 giây đầu bài kế im lặng");
-            }
-            if (skip >= 0 && head.end() >= skip + (int64_t)(kHeadSeconds * head.rate)) break;
-        }
-        nd.release();
-        if (skip < 0) throw Failure("bài kế im lặng hoàn toàn");
-        if (head.end() < skip + std::llround(s.seconds * head.rate)) throw Failure("bài kế ngắn hơn độ dài chuyển");
-        for (auto& x : head.data) x *= (float)next.scale;
-
-        // 4. render the transition
-        const Resampler rs = [&](const std::vector<float>& v, unsigned a, unsigned b) {
-            return resample(v, channels, channelConfig, a, b, next.handle);
-        };
-        Transition t;
-        std::string why;
-        bool beat = false;
-        // ready less than a second before it starts counts as too late
-        auto late = [&] { return p.pos >= t.renderStart - (int64_t)rate; };
-        if (beatMatch) {
-            const Beats nextBeats = analyseBeats(head.data.data(), head.data.size() / channels, channels, head.rate);
-            if (nextBeats.steady()) learnBpm(next.handle, nextBeats.bpm);
-            beat = beatTransition(old, oldBeats, oldPlan, head, skip, nextBeats, s, rs, t, why);
-            if (beat && late()) {
-                beat = false;
-                why = "đã qua điểm bắt đầu khớp nhịp";
-            }
-        }
-        if (!beat) t = plainTransition(old, end, head, skip, s, rs);
-        if (late()) {
-            // prepared late (a seek near the end, a late queue): a shorter overlap still fits
-            const double left = (double)(end - p.pos) / rate - 2;
-            if (left < kShortestSeconds) throw Failure("đã quá gần cuối bài khi chuẩn bị xong");
-            s.seconds = (std::min)(s.seconds, left);
-            t = plainTransition(old, end, head, skip, s, rs);
-        }
-
-        p.next = next.handle;
-        p.renderStart = t.renderStart;
-        p.newResume = t.newResume;
-        p.nextRate = head.rate;
-        p.out = std::move(t.out);
-        p.ready = true;
-        {
-            console::formatter line;  // printed at the end of this block
-            line << "AutoMix: sẵn sàng chuyển sang \"" << next.handle << "\": " << t.summary.c_str();
-            if (beatMatch && !beat) line << " (không khớp nhịp: " << why.c_str() << ")";
-            line << ", bỏ " << pfc::format_float((double)skip / head.rate, 0, 1) << " s im lặng đầu, "
-                 << pfc::format_float(length - (double)end / rate, 0, 1) << " s im lặng cuối, outro "
-                 << pfc::format_float(outro, 0, 1) << " s";
-            if (head.rate != rate) line << ", đổi " << head.rate << " → " << rate << " Hz";
-        }
-
-        // 5. the queue may have changed since; check once more right before the transition
-        waitForPos(p, t.renderStart - (int64_t)(kRecheckLeadSeconds * rate));
-        const NextTrack again = inMain<NextTrack>([current] { return predictNext(current); }, abort);
-        if (again.handle != next.handle && p.pos < t.renderStart) {
-            p.ready = false;
-            log("bài kế đã đổi ngay trước lúc chuyển, lần này chuyển bình thường");
-        }
-    } catch (exception_aborted const&) {
-    } catch (std::exception const& e) {
-        FB2K_console_formatter() << "AutoMix: chuyển bình thường, lý do: " << e.what();
+        if (end > 0) tail->soundEnd = end;
+    } catch (...) {
+        // unknown: the fade-out then ends at the track's end
     }
 }
 
 // ---- the DSP ----
 
-// From renderStart on, the rendered transition replaces the live audio. Its frames are paced over everything
-// the DSP consumes until the next track's live playback carries on (the rest of the outgoing track, then the
-// already-heard head of the next one), so output keeps flowing while that input is skipped: dropping it all at
-// once would leave the player's buffer empty and stutter.
 class automix_dsp : public dsp_impl_base {
 public:
     static GUID g_get_guid() { return guid_dsp; }
@@ -374,80 +109,35 @@ public:
         const dsp_track_t track = get_cur_file();
         if (m_trackEnded || track != m_track) beginTrack(track, *chunk);
 
-        const unsigned channels = chunk->get_channels();
-        size_t n = chunk->get_sample_count();
-
-        // the part of this track that was already heard during the transition: skipped, while the
-        // transition plays on
-        if (m_dropNew > 0) {
-            const size_t skipped = (std::min)(n, (size_t)m_dropNew);
-            const size_t emit = pace(skipped * (double)m_out.rate / chunk->get_srate());
-            m_dropNew -= (int64_t)skipped;
-            m_pos += (int64_t)skipped;
-            if (skipped == n) {
-                if (emit == 0) return false;
-                setFromOut(*chunk, emit);
-                return true;
-            }
-            if (emit > 0) setFromOut(*insert_chunk(emit * m_out.channels), emit);
-            const audio_sample* d = chunk->get_data();
-            std::vector<audio_sample> rest(d + skipped * channels, d + n * channels);
-            chunk->set_data(rest.data(), n - skipped, channels, chunk->get_srate(), chunk->get_channel_config());
-            n = chunk->get_sample_count();
-        }
-        // live playback of this track carries on: what is left of the transition goes first
-        if (m_out.plan && m_dropNew == 0 && m_out.plan != m_plan) {
-            const size_t left = m_out.total() - m_out.used;
-            for (size_t done = 0; done < left;) {
-                const size_t cnt = (std::min)((size_t)m_out.rate / 2, left - done);
-                setFromOut(*insert_chunk(cnt * m_out.channels), cnt);
-                done += cnt;
-            }
-            m_out = {};
-        }
-
+        const size_t n = chunk->get_sample_count();
         // after a seek, wait for the main thread to tell where we are
         if (m_pos < 0) {
-            if (m_flushTick != 0 && g_seekTick + 50 >= m_flushTick) {
-                m_pos = std::llround(g_seekTime * chunk->get_srate()) + m_sinceFlush;
-            } else {
+            if (m_flushTick == 0 || g_seekTick + 50 < m_flushTick) {
                 m_sinceFlush += (int64_t)n;
                 return true;
             }
+            m_pos = std::llround(g_seekTime * chunk->get_srate()) + m_sinceFlush;
         }
-        if (m_plan) m_plan->pos = m_pos;
-
         const int64_t start = m_pos;
         m_pos += (int64_t)n;
-        if (m_out.plan) {
-            // the rest of the outgoing track: skipped, the transition plays instead
-            const size_t emit = pace((double)n);
-            if (emit == 0) return false;
-            setFromOut(*chunk, emit);
-            return true;
-        }
-        if (!m_plan || !m_plan->ready || chunk->get_srate() != m_rate || channels != m_channels) return true;
-        const Plan& p = *m_plan;
-        if (start > p.renderStart || start + (int64_t)n <= p.renderStart) return true;
+        if (chunk->get_srate() != m_rate) return true;
 
-        // the transition starts inside this chunk
-        log("bắt đầu chuyển bài");
-        m_out = Out{};
-        m_out.plan = m_plan;
-        m_out.rate = m_rate;
-        m_out.channels = m_channels;
-        m_out.channelConfig = m_channelConfig;
-        const double trackFrames = (std::max)(m_track->get_length() * m_rate, (double)p.renderStart);
-        const double input = trackFrames - (double)p.renderStart +
-                             (double)p.newResume * m_rate / (std::max)(1u, p.nextRate);
-        m_out.ratio = (std::min)(1.0, (double)m_out.total() / (std::max)(1.0, input));
-        const size_t keep = (size_t)(p.renderStart - start);
-        const size_t emit = pace((double)(n - keep));
-        std::vector<audio_sample> mixed(chunk->get_data(), chunk->get_data() + keep * channels);
-        mixed.insert(mixed.end(), p.out.data(), p.out.data() + emit * channels);
-        m_out.used = emit;
-        if (mixed.empty()) return false;
-        chunk->set_data(mixed.data(), keep + emit, channels, m_rate, m_channelConfig);
+        const int64_t known = m_tail ? m_tail->soundEnd.load() : -1;
+        const int64_t end = known > 0 ? known : m_trackEnd;
+        const int64_t outLen = (std::max)<int64_t>(1, std::llround((double)g_cfgFadeOut.get() * m_rate));
+        const int64_t inLen = m_fadeIn ? std::llround((double)g_cfgFadeIn.get() * m_rate) : 0;
+        const int64_t outFrom = end > 0 ? end - outLen : INT64_MAX;
+        if (start >= inLen && start + (int64_t)n <= outFrom) return true;  // the middle of the track: untouched
+
+        audio_sample* d = chunk->get_data();
+        const unsigned channels = chunk->get_channels();
+        for (size_t i = 0; i < n; ++i) {
+            const int64_t t = start + (int64_t)i;
+            double g = 1;
+            if (t < inLen) g *= fadeInGain((double)t / inLen);
+            if (t >= outFrom) g *= t >= end ? 0.0 : fadeOutGain((double)(t - outFrom) / outLen);
+            for (unsigned c = 0; c < channels; ++c) d[i * channels + c] *= (audio_sample)g;
+        }
         return true;
     }
 
@@ -458,84 +148,44 @@ public:
         m_pos = -1;
         m_sinceFlush = 0;
         m_flushTick = GetTickCount64();
-        m_out = {};
-        m_dropNew = 0;
-        if (m_plan) m_plan->pos = -1;
+        m_fadeIn = false;  // a seek or a manual change: no fade-in
     }
 
     double get_latency() override { return 0; }
     bool need_track_change_mark() override { return true; }
 
 private:
-    // the rendered transition being played out, into the next track if needed
-    struct Out {
-        std::shared_ptr<Plan> plan;
-        size_t used = 0;
-        double credit = 0;  // output frames owed by the pacing, below one
-        unsigned rate = 0, channels = 0, channelConfig = 0;
-        double ratio = 1;  // output frames per input frame consumed
-        size_t total() const { return plan ? plan->out.size() / channels : 0; }
-    };
-
-    // how many transition frames go out for `input` frames consumed
-    size_t pace(double input) {
-        if (!m_out.plan) return 0;
-        m_out.credit += input * m_out.ratio;
-        const size_t due = (size_t)m_out.credit;
-        m_out.credit -= (double)due;
-        return (std::min)(due, m_out.total() - m_out.used);
-    }
-
-    // fills `chunk` with the next `count` transition frames
-    void setFromOut(audio_chunk& chunk, size_t count) {
-        const float* from = m_out.plan->out.data() + m_out.used * m_out.channels;
-        const std::vector<audio_sample> wide(from, from + count * m_out.channels);
-        chunk.set_data(wide.data(), count, m_out.channels, m_out.rate, m_out.channelConfig);
-        m_out.used += count;
-    }
-
     void beginTrack(const dsp_track_t& track, const audio_chunk& chunk) {
-        if (m_out.plan) {
-            if (track.is_valid() && track == m_out.plan->next) {
-                m_dropNew = m_out.plan->newResume;
-                log("đã chuyển bài");
-            } else {
-                // a different track came: it plays from its start, the transition is cut
-                m_out = {};
-                log("bài phát tiếp khác bài đã chuẩn bị, phát bài mới từ đầu");
-            }
-        }
+        m_fadeIn = m_trackEnded;  // only when the previous track ended by itself
         stopWorker();
         m_track = track;
         m_trackEnded = false;
         m_pos = 0;
         m_flushTick = 0;
         m_rate = chunk.get_srate();
-        m_channels = chunk.get_channels();
-        m_channelConfig = chunk.get_channel_config();
+        m_trackEnd = track.is_valid() ? std::llround(track->get_length() * m_rate) : 0;
         if (track.is_valid()) {
-            m_plan = std::make_shared<Plan>();
-            FB2K_console_formatter() << "AutoMix: đang phân tích \"" << track << "\" để chuẩn bị chuyển bài";
-            m_worker = std::thread(prepare, m_plan, track, m_rate, m_channels, m_channelConfig);
+            m_tail = std::make_shared<Tail>();
+            m_worker = std::thread(findSoundEnd, m_tail, track, m_rate);
         }
     }
 
     void stopWorker() {
-        if (m_plan) m_plan->abort.abort();
+        if (m_tail) m_tail->abort.abort();
         if (m_worker.joinable()) m_worker.join();
-        m_plan.reset();
+        m_tail.reset();
     }
 
-    Out m_out;
-    std::shared_ptr<Plan> m_plan;
+    std::shared_ptr<Tail> m_tail;
     std::thread m_worker;
     dsp_track_t m_track;
     bool m_trackEnded = false;
-    unsigned m_rate = 0, m_channels = 0, m_channelConfig = 0;
+    bool m_fadeIn = false;
+    unsigned m_rate = 0;
+    int64_t m_trackEnd = 0;  // frames, from the track's length
     int64_t m_pos = -1;  // frames into the current track, -1 unknown (after a seek)
     int64_t m_sinceFlush = 0;
     uint64_t m_flushTick = 0;
-    int64_t m_dropNew = 0;  // frames still to skip from the start of the new track
 };
 
 dsp_factory_nopreset_t<automix_dsp> g_dspFactory;

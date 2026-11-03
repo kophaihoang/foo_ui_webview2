@@ -35,8 +35,8 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;_USE_MATH_DEFINES;_CRT_SECURE_NO_WARNINGS;kiss_fft_scalar=double;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\lib\foobar2000_sdk;$(ProjectDir)ext\qm-dsp;$(ProjectDir)ext\qm-dsp\ext\kissfft;$(ProjectDir)ext\qm-dsp\ext\kissfft\tools;$(ProjectDir)ext\soundtouch\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\lib\foobar2000_sdk;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -67,28 +67,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\automix.cpp" />
-    <ClCompile Include="src\beats.cpp" />
-    <ClCompile Include="src\bpmstore.cpp" />
-    <ClCompile Include="src\transition.cpp" />
-  </ItemGroup>
-  <!-- third-party, fetched into ext\ by fetch-libs.ps1 -->
-  <ItemGroup>
-    <ClCompile Include="ext\qm-dsp\dsp\onsets\DetectionFunction.cpp" />
-    <ClCompile Include="ext\qm-dsp\dsp\phasevocoder\PhaseVocoder.cpp" />
-    <ClCompile Include="ext\qm-dsp\dsp\transforms\FFT.cpp" />
-    <ClCompile Include="ext\qm-dsp\dsp\tempotracking\TempoTrackV2.cpp" />
-    <ClCompile Include="ext\qm-dsp\dsp\tempotracking\DownBeat.cpp" />
-    <ClCompile Include="ext\qm-dsp\dsp\rateconversion\Decimator.cpp" />
-    <ClCompile Include="ext\qm-dsp\maths\MathUtilities.cpp" />
-    <ClCompile Include="ext\qm-dsp\maths\KLDivergence.cpp" />
-    <ClCompile Include="ext\qm-dsp\ext\kissfft\kiss_fft.c" />
-    <ClCompile Include="ext\qm-dsp\ext\kissfft\tools\kiss_fftr.c" />
-    <ClCompile Include="ext\soundtouch\source\SoundTouch\*.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\beats.h" />
-    <ClInclude Include="src\bpmstore.h" />
-    <ClInclude Include="src\transition.h" />
     <ClInclude Include="src\mix.h" />
   </ItemGroup>
   <ItemGroup>
