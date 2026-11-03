@@ -113,13 +113,19 @@ const GATHER_MS = 220;
 /** After a fold the fan-out starts this soon, ms (entering waits for the shared cover glide instead) */
 const REGATHER_DELAY_MS = 40;
 const LIT_EPSILON = 0.005;
-/** While gliding the covers lean into the motion, sink back and spread apart, by speed (items/s) */
-const LEAN_DEG_PER_SPEED = 5;
-const LEAN_MAX_DEG = 30;
-const SINK_PER_SPEED = 0.035;
-const SINK_MAX = 0.2;
-const STRETCH_PER_SPEED = 0.03;
-const STRETCH_MAX = 0.2;
+/**
+ * While gliding the covers lean into the motion, sink back and spread apart, by speed (items/s). The speed
+ * goes through two smoothing stages first, so the covers ease into and out of it and never snap when a
+ * new step changes the glide
+ */
+const MOTION_TAU_MS = 55;
+const MOTION_EPSILON = 0.01;
+const LEAN_DEG_PER_SPEED = 6;
+const LEAN_MAX_DEG = 28;
+const SINK_PER_SPEED = 0.04;
+const SINK_MAX = 0.18;
+const STRETCH_PER_SPEED = 0.035;
+const STRETCH_MAX = 0.18;
 
 export function createCoverflowEngine(
   clock: EngineClock,
@@ -145,6 +151,9 @@ export function createCoverflowEngine(
   // 没有点亮的封面经过中间位置也保持压暗，滚动时一张张掠过不会一闪一闪地变亮，只有确定的落点才亮起来
   const lit = new Map<string, number>();
   let lastPaint = Number.NEGATIVE_INFINITY;
+  // the glide speed, smoothed twice: `motion` is what the covers show
+  let motionLag = 0;
+  let motion = 0;
 
   // 退场开始后位置定在原地：淡出就是原地淡出，不跟着选中项（关模式时选中会回到正在播放那一首）再滚
   let frozenAt: number | null = null;
@@ -156,6 +165,7 @@ export function createCoverflowEngine(
     return (
       (glide !== null && !glideDone(glide, now)) ||
       gather !== null ||
+      (frozenAt === null && motion !== 0) ||
       (intro !== null && now - intro.start < intro.duration) ||
       (outro !== null && now - outro.start < EXIT_MS) ||
       (frozenAt === null &&
@@ -168,12 +178,12 @@ export function createCoverflowEngine(
     d: number,
     now: number,
     brightness: number,
-    velocity: number,
+    speed: number,
   ): void {
     const slot = slotAt(d);
-    const lean = Math.max(-LEAN_MAX_DEG, Math.min(LEAN_MAX_DEG, -velocity * LEAN_DEG_PER_SPEED));
-    const sink = 1 - Math.min(SINK_MAX, Math.abs(velocity) * SINK_PER_SPEED);
-    const stretch = 1 + Math.min(STRETCH_MAX, Math.abs(velocity) * STRETCH_PER_SPEED);
+    const lean = Math.max(-LEAN_MAX_DEG, Math.min(LEAN_MAX_DEG, -speed * LEAN_DEG_PER_SPEED));
+    const sink = 1 - Math.min(SINK_MAX, Math.abs(speed) * SINK_PER_SPEED);
+    const stretch = 1 + Math.min(STRETCH_MAX, Math.abs(speed) * STRETCH_PER_SPEED);
     // 间距在入场插值之前收紧，飞入的终点才是收紧后的槽位
     let pose = {
       ...slot,
@@ -223,6 +233,19 @@ export function createCoverflowEngine(
     const velocity = frozenAt !== null ? 0 : velocityAt(now);
     const dt = Number.isFinite(lastPaint) ? Math.min(100, Math.max(0, now - lastPaint)) : 0;
     lastPaint = now;
+    // frozen while leaving, like the position
+    const follow =
+      frozenAt !== null ? 0 : reduced || !visible ? 1 : 1 - Math.exp(-dt / MOTION_TAU_MS);
+    motionLag += (velocity - motionLag) * follow;
+    motion += (motionLag - motion) * follow;
+    if (
+      velocity === 0 &&
+      Math.abs(motionLag) < MOTION_EPSILON &&
+      Math.abs(motion) < MOTION_EPSILON
+    ) {
+      motionLag = 0;
+      motion = 0;
+    }
     // 减弱动效与窗口看不见时不过渡，直接到位；退场期间遮罩定住不变
     const rate = frozenAt !== null ? 0 : reduced || !visible ? 1 : 1 - Math.exp(-dt / LIT_TAU_MS);
     for (const card of cards) {
@@ -232,7 +255,7 @@ export function createCoverflowEngine(
       const stepped = before === undefined ? goal : before + (goal - before) * rate;
       const next = Math.abs(goal - stepped) < LIT_EPSILON ? goal : stepped;
       lit.set(card.key, next);
-      write(card, card.index - pos, now, next, velocity);
+      write(card, card.index - pos, now, next, motion);
     }
   }
 

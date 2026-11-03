@@ -18,9 +18,9 @@ describe('startGlide：临界阻尼弹簧', () => {
     expect(glideAt(glide, 300)).toBeLessThan(3.92);
   });
 
-  it('角频率 13、中途改目标保留 60% 的速度', () => {
+  it('角频率 13、中途改目标保留 90% 的速度', () => {
     expect(OMEGA).toBe(13);
-    expect(CARRY).toBe(0.6);
+    expect(CARRY).toBe(0.9);
   });
 
   it('距离不同用的时间差不多，远了也只多一点点：回位不会因为远而慢很多', () => {

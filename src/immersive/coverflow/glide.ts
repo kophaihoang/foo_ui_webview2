@@ -17,7 +17,7 @@ export const OMEGA = 13;
  *
  * 中途切换目标位置时保留该比例的瞬时速度，平衡连续滚动的平滑感与停止交互时的响应跟手度
  */
-export const CARRY = 0.6;
+export const CARRY = 0.9;
 /** 判定收敛到位的位移阈值（条目单位，约合千分之二封面宽）与速度阈值 */
 const POSITION_EPSILON = 0.002;
 const VELOCITY_EPSILON = 0.05;
