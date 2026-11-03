@@ -124,7 +124,7 @@ public:
 
         const int64_t known = m_tail ? m_tail->soundEnd.load() : -1;
         const int64_t end = known > 0 ? known : m_trackEnd;
-        const int64_t outLen = (std::max)<int64_t>(1, std::llround((double)g_cfgFadeOut.get() * m_rate));
+        const int64_t outLen = (std::max)((int64_t)1, (int64_t)std::llround((double)g_cfgFadeOut.get() * m_rate));
         const int64_t inLen = m_fadeIn ? std::llround((double)g_cfgFadeIn.get() * m_rate) : 0;
         const int64_t outFrom = end > 0 ? end - outLen : INT64_MAX;
         if (start >= inLen && start + (int64_t)n <= outFrom) return true;  // the middle of the track: untouched
