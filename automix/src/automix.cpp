@@ -27,7 +27,7 @@
 #include "mix.h"
 #include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.3.1",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.3.2",
     "DJ-style transitions between tracks.\n"
     "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
     "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
@@ -168,6 +168,7 @@ struct Plan {
     metadb_handle_ptr next;
     int64_t renderStart = 0;  // frame of the current track where `out` takes over
     int64_t newResume = 0;  // frame of the next track (its own rate) where its live playback carries on
+    unsigned nextRate = 0;
     std::vector<float> out;  // the rendered transition, current track's rate and channels
 };
 
@@ -322,6 +323,7 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
         p.next = next.handle;
         p.renderStart = t.renderStart;
         p.newResume = t.newResume;
+        p.nextRate = head.rate;
         p.out = std::move(t.out);
         p.ready = true;
         {
@@ -348,6 +350,10 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
 
 // ---- the DSP ----
 
+// From renderStart on, the rendered transition replaces the live audio. Its frames are paced over everything
+// the DSP consumes until the next track's live playback carries on (the rest of the outgoing track, then the
+// already-heard head of the next one), so output keeps flowing while that input is skipped: dropping it all at
+// once would leave the player's buffer empty and stutter.
 class automix_dsp : public dsp_impl_base {
 public:
     static GUID g_get_guid() { return guid_dsp; }
@@ -362,19 +368,33 @@ public:
         const unsigned channels = chunk->get_channels();
         size_t n = chunk->get_sample_count();
 
-        // the part of this track that was already heard during the transition
+        // the part of this track that was already heard during the transition: skipped, while the
+        // transition plays on
         if (m_dropNew > 0) {
-            if ((size_t)m_dropNew >= n) {
-                m_dropNew -= (int64_t)n;
-                m_pos += (int64_t)n;
-                return false;
+            const size_t skipped = (std::min)(n, (size_t)m_dropNew);
+            const size_t emit = pace(skipped * (double)m_out.rate / chunk->get_srate());
+            m_dropNew -= (int64_t)skipped;
+            m_pos += (int64_t)skipped;
+            if (skipped == n) {
+                if (emit == 0) return false;
+                setFromOut(*chunk, emit);
+                return true;
             }
+            if (emit > 0) setFromOut(*insert_chunk(emit * m_out.channels), emit);
             const audio_sample* d = chunk->get_data();
-            std::vector<audio_sample> rest(d + m_dropNew * channels, d + n * channels);
-            chunk->set_data(rest.data(), n - (size_t)m_dropNew, channels, chunk->get_srate(), chunk->get_channel_config());
-            m_pos += m_dropNew;
-            m_dropNew = 0;
+            std::vector<audio_sample> rest(d + skipped * channels, d + n * channels);
+            chunk->set_data(rest.data(), n - skipped, channels, chunk->get_srate(), chunk->get_channel_config());
             n = chunk->get_sample_count();
+        }
+        // live playback of this track carries on: what is left of the transition goes first
+        if (m_out.plan && m_dropNew == 0 && m_out.plan != m_plan) {
+            const size_t left = m_out.total() - m_out.used;
+            for (size_t done = 0; done < left;) {
+                const size_t cnt = (std::min)((size_t)m_out.rate / 2, left - done);
+                setFromOut(*insert_chunk(cnt * m_out.channels), cnt);
+                done += cnt;
+            }
+            m_out = {};
         }
 
         // after a seek, wait for the main thread to tell where we are
@@ -390,25 +410,36 @@ public:
 
         const int64_t start = m_pos;
         m_pos += (int64_t)n;
+        if (m_out.plan) {
+            // the rest of the outgoing track: skipped, the transition plays instead
+            const size_t emit = pace((double)n);
+            if (emit == 0) return false;
+            setFromOut(*chunk, emit);
+            return true;
+        }
         if (!m_plan || !m_plan->ready || chunk->get_srate() != m_rate || channels != m_channels) return true;
         const Plan& p = *m_plan;
+        if (start > p.renderStart || start + (int64_t)n <= p.renderStart) return true;
 
-        // from renderStart on, the rendered transition replaces the live track, frame for frame;
-        // once it runs out the rest of the live track is dropped
-        size_t keep = 0;
-        if (!m_rendering) {
-            if (start > p.renderStart || start + (int64_t)n <= p.renderStart) return true;
-            m_rendering = true;
-            log("bắt đầu chuyển bài");
-            m_outUsed = 0;
-            keep = (size_t)(p.renderStart - start);
-        }
-        const size_t total = p.out.size() / channels;
-        const size_t take = (std::min)(n - keep, total - m_outUsed);
-        std::copy_n(p.out.data() + m_outUsed * channels, take * channels, chunk->get_data() + keep * channels);
-        m_outUsed += take;
-        if (keep + take < n) chunk->set_sample_count(keep + take);
-        return keep + take > 0;
+        // the transition starts inside this chunk
+        log("bắt đầu chuyển bài");
+        m_out = Out{};
+        m_out.plan = m_plan;
+        m_out.rate = m_rate;
+        m_out.channels = m_channels;
+        m_out.channelConfig = m_channelConfig;
+        const double trackFrames = (std::max)(m_track->get_length() * m_rate, (double)p.renderStart);
+        const double input = trackFrames - (double)p.renderStart +
+                             (double)p.newResume * m_rate / (std::max)(1u, p.nextRate);
+        m_out.ratio = (std::min)(1.0, (double)m_out.total() / (std::max)(1.0, input));
+        const size_t keep = (size_t)(p.renderStart - start);
+        const size_t emit = pace((double)(n - keep));
+        std::vector<audio_sample> mixed(chunk->get_data(), chunk->get_data() + keep * channels);
+        mixed.insert(mixed.end(), p.out.data(), p.out.data() + emit * channels);
+        m_out.used = emit;
+        if (mixed.empty()) return false;
+        chunk->set_data(mixed.data(), keep + emit, channels, m_rate, m_channelConfig);
+        return true;
     }
 
     void on_endoftrack(abort_callback&) override { m_trackEnded = true; }
@@ -418,8 +449,7 @@ public:
         m_pos = -1;
         m_sinceFlush = 0;
         m_flushTick = GetTickCount64();
-        m_rendering = false;
-        m_outUsed = 0;
+        m_out = {};
         m_dropNew = 0;
         if (m_plan) m_plan->pos = -1;
     }
@@ -428,20 +458,41 @@ public:
     bool need_track_change_mark() override { return true; }
 
 private:
+    // the rendered transition being played out, into the next track if needed
+    struct Out {
+        std::shared_ptr<Plan> plan;
+        size_t used = 0;
+        double credit = 0;  // output frames owed by the pacing, below one
+        unsigned rate = 0, channels = 0, channelConfig = 0;
+        double ratio = 1;  // output frames per input frame consumed
+        size_t total() const { return plan ? plan->out.size() / channels : 0; }
+    };
+
+    // how many transition frames go out for `input` frames consumed
+    size_t pace(double input) {
+        if (!m_out.plan) return 0;
+        m_out.credit += input * m_out.ratio;
+        const size_t due = (size_t)m_out.credit;
+        m_out.credit -= (double)due;
+        return (std::min)(due, m_out.total() - m_out.used);
+    }
+
+    // fills `chunk` with the next `count` transition frames
+    void setFromOut(audio_chunk& chunk, size_t count) {
+        const float* from = m_out.plan->out.data() + m_out.used * m_out.channels;
+        const std::vector<audio_sample> wide(from, from + count * m_out.channels);
+        chunk.set_data(wide.data(), count, m_out.channels, m_out.rate, m_out.channelConfig);
+        m_out.used += count;
+    }
+
     void beginTrack(const dsp_track_t& track, const audio_chunk& chunk) {
-        if (m_plan && m_rendering) {
-            if (track.is_valid() && track == m_plan->next) {
-                // whatever of the rendered transition is left goes out before this track's first chunk
-                const std::vector<float>& out = m_plan->out;
-                const size_t total = out.size() / m_channels, piece = m_rate / 2;
-                for (size_t at = m_outUsed; at < total; at += piece) {
-                    const size_t cnt = (std::min)(piece, total - at);
-                    const std::vector<audio_sample> wide(out.data() + at * m_channels, out.data() + (at + cnt) * m_channels);
-                    insert_chunk(wide.size())->set_data(wide.data(), cnt, m_channels, m_rate, m_channelConfig);
-                }
-                m_dropNew = m_plan->newResume;
+        if (m_out.plan) {
+            if (track.is_valid() && track == m_out.plan->next) {
+                m_dropNew = m_out.plan->newResume;
                 log("đã chuyển bài");
             } else {
+                // a different track came: it plays from its start, the transition is cut
+                m_out = {};
                 log("bài phát tiếp khác bài đã chuẩn bị, phát bài mới từ đầu");
             }
         }
@@ -450,8 +501,6 @@ private:
         m_trackEnded = false;
         m_pos = 0;
         m_flushTick = 0;
-        m_rendering = false;
-        m_outUsed = 0;
         m_rate = chunk.get_srate();
         m_channels = chunk.get_channels();
         m_channelConfig = chunk.get_channel_config();
@@ -468,6 +517,7 @@ private:
         m_plan.reset();
     }
 
+    Out m_out;
     std::shared_ptr<Plan> m_plan;
     std::thread m_worker;
     dsp_track_t m_track;
@@ -476,9 +526,7 @@ private:
     int64_t m_pos = -1;  // frames into the current track, -1 unknown (after a seek)
     int64_t m_sinceFlush = 0;
     uint64_t m_flushTick = 0;
-    bool m_rendering = false;  // the rendered transition has replaced the live track
-    size_t m_outUsed = 0;  // frames of it played so far
-    int64_t m_dropNew = 0;  // frames still to drop from the start of the new track
+    int64_t m_dropNew = 0;  // frames still to skip from the start of the new track
 };
 
 dsp_factory_nopreset_t<automix_dsp> g_dspFactory;
