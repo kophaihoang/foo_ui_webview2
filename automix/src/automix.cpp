@@ -3,7 +3,7 @@
 // The classic way, from live audio only: the last seconds of a track's sound are held back (the decoder runs
 // far ahead of the sound card, so holding them leaves no gap), and when the next track arrives they are mixed
 // into its first seconds. Nothing of the next track is read ahead, skipped or spliced. A low-priority worker
-// finds where each track's sound really ends, so trailing silence is left out of the overlap.
+// finds where each track's ending has faded well down, so the overlap starts while the old track is still loud.
 // The beat-matched version (render ahead, qm-dsp, SoundTouch) is in the git history of this branch.
 #include <foobar2000/SDK/foobar2000.h>
 
@@ -16,9 +16,9 @@
 
 #include "mix.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.6.0",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.6.1",
     "Crossfades tracks when playback moves on by itself: the end of one fades out over the start of the next.\n"
-    "Silence at the end and the start is left out. Settings: Preferences > Advanced > Playback > AutoMix.\n\n"
+    "A long fading ending and silence at the start are left out. Settings: Preferences > Advanced > Playback > AutoMix.\n\n"
     "License: GPL-3.0-or-later");
 VALIDATE_COMPONENT_FILENAME("foo_dsp_automix.dll");
 
@@ -38,6 +38,7 @@ advconfig_integer_factory g_cfgSilence("Silence threshold (dB below full scale)"
 constexpr double kTailScanSeconds = 30;  // where the sound ends is looked for this far from the end
 constexpr double kSettleSeconds = 5;  // the scan waits this long after a track starts (track changes are busy)
 constexpr double kLeadSilenceSeconds = 5;  // at most this much silence is skipped at the start of the next track
+constexpr double kEndingDropDb = 15;  // a track's ending counts as over this far below its loudest quarter second
 
 // ---- seek position: the DSP is flushed on seek but not told where to; the main thread is ----
 
@@ -63,7 +64,7 @@ public:
 };
 play_callback_static_factory_t<seek_watch> g_seekWatch;
 
-// ---- where a track's sound ends ----
+// ---- where a track's ending has faded out ----
 
 struct Tail {
     abort_callback_impl abort;
@@ -82,16 +83,27 @@ void findSoundEnd(std::shared_ptr<Tail> tail, metadb_handle_ptr track, unsigned 
         if (!dec->can_seek()) return;
         const double from = (std::max)(0.0, length - kTailScanSeconds);
         dec->seek(from, tail->abort);
-        const double threshold = dbToAmp(-(double)g_cfgSilence.get());
-        int64_t frame = std::llround(from * rate), end = -1;
+        // mean square per quarter second
+        const size_t window = (std::max)(1u, rate / 4);
+        std::vector<double> power;
+        double sum = 0;
+        size_t inWindow = 0;
         audio_chunk_impl chunk;
         while (dec->run(chunk, tail->abort)) {
             if (chunk.get_srate() != rate) return;
-            const size_t e = audibleEnd(chunk.get_data(), chunk.get_sample_count(), chunk.get_channels(), threshold);
-            if (e > 0) end = frame + (int64_t)e;
-            frame += (int64_t)chunk.get_sample_count();
+            const audio_sample* d = chunk.get_data();
+            const unsigned channels = chunk.get_channels();
+            for (size_t i = 0; i < chunk.get_sample_count(); ++i) {
+                for (unsigned c = 0; c < channels; ++c) sum += d[i * channels + c] * d[i * channels + c] / channels;
+                if (++inWindow == window) {
+                    power.push_back(sum / window);
+                    sum = 0;
+                    inWindow = 0;
+                }
+            }
         }
-        if (end > 0) tail->soundEnd = end;
+        const size_t loud = loudEnd(power, kEndingDropDb);
+        if (loud > 0) tail->soundEnd = std::llround(from * rate) + (int64_t)(loud * window);
     } catch (...) {
         // unknown: the held part then ends at the track's end
     }
@@ -138,6 +150,9 @@ public:
             const int64_t len = std::llround((double)g_cfgCrossfade.get() * m_rate);
             if (end <= 0 || start + (int64_t)n <= end - len) return true;
             m_holdEnd = end;
+            FB2K_console_formatter() << "AutoMix: crossfade ready, "
+                                     << pfc::format_float((double)(m_trackEnd - end) / m_rate, 0, 1)
+                                     << " s of fading ending left out";
             m_hold = Held{{}, m_rate, chunk->get_channels(), chunk->get_channel_config()};
         }
         const unsigned channels = chunk->get_channels();
@@ -238,7 +253,10 @@ private:
             m_fading = std::move(m_hold);
             m_fadingUsed = 0;
             m_leadSkip = 0;
+            FB2K_console_formatter() << "AutoMix: crossfading "
+                                     << pfc::format_float((double)m_fading.frames() / m_fading.rate, 0, 1) << " s";
         } else {
+            if (m_hold.frames() > 0) FB2K_console_formatter() << "AutoMix: no crossfade, the track was changed by hand";
             emit(m_hold, 0, m_hold.frames(), false);
         }
         m_hold = {};

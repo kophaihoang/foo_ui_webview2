@@ -22,11 +22,15 @@ size_t firstAudible(const T* data, size_t frames, unsigned channels, double thre
     return frames;
 }
 
-// One past the last frame where any channel is above the threshold; 0 if none is.
-template <typename T>
-size_t audibleEnd(const T* data, size_t frames, unsigned channels, double threshold) {
-    for (size_t i = frames * channels; i-- > 0;)
-        if (std::fabs(data[i]) > threshold) return i / channels + 1;
+// Where a track's ending has faded well down: one past the last window whose power is within `dropDb` of the
+// loudest window's. `power` holds each window's mean square; 0 if all are silent.
+inline size_t loudEnd(const std::vector<double>& power, double dropDb) {
+    double peak = 0;
+    for (double p : power) peak = std::fmax(peak, p);
+    if (peak <= 0) return 0;
+    const double floor = peak * std::pow(10.0, -dropDb / 10);
+    for (size_t i = power.size(); i-- > 0;)
+        if (power[i] >= floor) return i + 1;
     return 0;
 }
 

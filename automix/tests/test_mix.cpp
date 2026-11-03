@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 #include "mix.h"
 
 using namespace automix;
@@ -17,9 +18,14 @@ int main() {
     const float s[] = {0, 0, 0.001f, 0, 0, 0.5f, 0, 0};
     const double thr = dbToAmp(-50);  // ~0.00316
     assert(firstAudible(s, 4, 2, thr) == 2);
-    assert(audibleEnd(s, 4, 2, thr) == 3);
     const float quiet[] = {0, 0.001f};
-    assert(firstAudible(quiet, 1, 2, thr) == 1 && audibleEnd(quiet, 1, 2, thr) == 0);
+    assert(firstAudible(quiet, 1, 2, thr) == 1);
+
+    // a fading ending: loud, loud, -10 dB, -20 dB, -40 dB; a 15 dB drop ends after the -10 dB window
+    const std::vector<double> fading = {1, 0.8, 0.1, 0.01, 0.0001};
+    assert(loudEnd(fading, 15) == 3);
+    assert(loudEnd({0, 0}, 15) == 0);
+    assert(loudEnd({0.5, 0.5}, 15) == 2);
 
     // low-pass keeps 50 Hz, removes 5 kHz (so the bass cut takes bass, not treble)
     auto gainAt = [](double hz) {
