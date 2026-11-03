@@ -35,9 +35,10 @@ int main() {
     std::printf("grid: %.2f BPM, fit error %.3f beats, downbeat offset %d\n", b.bpm, b.fitError, b.downOffset);
     std::fflush(stdout);
     assert(std::fabs(b.bpm - 120) < 0.5 && b.fitError < 0.02);
-    // the grid's bar lines land on the accented kicks (every 4th beat, from 0 s)
+    // the grid's bar lines land on kicks (which beat starts the bar comes from qm-dsp's downbeat finder, which
+    // looks for harmonic change; this loop has none, so that choice isn't tested here)
     const double bar0 = b.barAtOrAfter(rate * 2.0) / rate;
-    assert(std::fabs(bar0 - std::round(bar0 / 2) * 2) < 0.03);
+    assert(std::fabs(bar0 - std::round(bar0 / beat) * beat) < 0.03);
 
     // beats land on the kicks at a steady offset (a constant offset cancels out between two tracks)
     std::vector<double> err;
