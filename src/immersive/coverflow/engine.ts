@@ -82,6 +82,8 @@ export interface CoverflowEngine {
   follow(pos: number): void;
   /** The fingers are off: glide from where they left to `target`, carrying their speed */
   release(target: number): void;
+  /** The card under the pointer: it lifts toward the viewer, once the covers stand still */
+  hover(key: string | null): void;
   /** 条目表重排：先按键把位置接到新表上（卡留在原地），再补间到 `target` */
   rekey(previous: readonly string[], next: readonly string[], target: number): void;
   /** 进入：选中项 `center` 不飞，其余登记着的卡从左到右依次飞入；减弱动效时在槽位上淡入 */
@@ -138,6 +140,19 @@ const STRETCH_MAX = 0.18;
 /** Fingers resting on the touchpad: their measured speed fades with this time constant, ms */
 const HELD_SPEED_TAU_MS = 60;
 const HELD_MIN_DT_MS = 4;
+/**
+ * Touchpad events don't come in step with the frames (one or two per frame), so the covers ease after the
+ * fingers with this time constant, ms: smooth, and too short to feel behind
+ */
+const HELD_EASE_MS = 24;
+/** Hover: the card grows, rises, turns this share of its angle toward the viewer and brightens */
+const HOVER_TAU_MS = 80;
+const HOVER_GROW = 0.05;
+const HOVER_RISE = 0.025;
+const HOVER_TURN = 0.35;
+const HOVER_BRIGHTEN = 0.6;
+/** Above this smoothed speed (items/s) nothing lifts: the cover under a still pointer keeps changing */
+const HOVER_STILL_SPEED = 0.3;
 
 export function createCoverflowEngine(
   clock: EngineClock,
@@ -170,7 +185,12 @@ export function createCoverflowEngine(
   // 退场开始后位置定在原地：淡出就是原地淡出，不跟着选中项（关模式时选中会回到正在播放那一首）再滚
   let frozenAt: number | null = null;
   /** Fingers on the touchpad, see `follow` */
-  let held: { pos: number; velocity: number; time: number } | null = null;
+  let held: { pos: number; velocity: number; time: number; shown: number } | null = null;
+  let hovered: string | null = null;
+  // each card's hover lift, 0 to 1, eased like `lit`
+  const lifted = new Map<string, number>();
+  const liftGoal = (card: EngineCard) =>
+    card.key === hovered && !glide && !held && Math.abs(motion) < HOVER_STILL_SPEED ? 1 : 0;
   const positionAt = (now: number) => frozenAt ?? held?.pos ?? (glide ? glideAt(glide, now) : rest);
   // fingers that stopped moving bring the speed down, even with no event to tell
   const velocityAt = (now: number) =>
@@ -190,7 +210,11 @@ export function createCoverflowEngine(
       (intro !== null && now - intro.start < intro.duration) ||
       (outro !== null && now - outro.start < EXIT_MS) ||
       (frozenAt === null &&
-        cards.some((card) => (lit.get(card.key) ?? litGoal(card)) !== litGoal(card)))
+        cards.some(
+          (card) =>
+            (lit.get(card.key) ?? litGoal(card)) !== litGoal(card) ||
+            (lifted.get(card.key) ?? 0) !== liftGoal(card),
+        ))
     );
   }
 
@@ -200,6 +224,7 @@ export function createCoverflowEngine(
     now: number,
     brightness: number,
     speed: number,
+    lift: number,
   ): void {
     const slot = slotAt(d);
     const lean = Math.max(-LEAN_MAX_DEG, Math.min(LEAN_MAX_DEG, -speed * LEAN_DEG_PER_SPEED));
@@ -209,8 +234,8 @@ export function createCoverflowEngine(
     let pose = {
       ...slot,
       offset: slot.offset * geometry.spread * stretch,
-      tilt: slot.tilt + lean,
-      size: slot.size * sink,
+      tilt: slot.tilt * (1 - HOVER_TURN * lift) + lean,
+      size: slot.size * sink * (1 + HOVER_GROW * lift),
     };
     let factor = 1;
     if (gather && !card.current && onSide(card.index, gather.center, gather.sides)) {
@@ -237,6 +262,7 @@ export function createCoverflowEngine(
     // 不倾斜时不写透视：视图过渡认的是二维变换，进出模式时正在播放那张封面是平的
     style.transform =
       `translateX(${pose.offset * geometry.cover}px) ` +
+      (lift > 0.001 ? `translateY(${-HOVER_RISE * lift * geometry.cover}px) ` : '') +
       (flat ? '' : `perspective(${geometry.perspective}px) rotateY(${pose.tilt}deg) `) +
       `scale(${pose.size})`;
     style.opacity = String(opacity);
@@ -244,16 +270,21 @@ export function createCoverflowEngine(
     style.zIndex = String(Math.round((RENDER_RADIUS - Math.min(Math.abs(d), RENDER_RADIUS)) * 10));
     // 没点亮的至少压到 DIM_SHADE，点亮的照槽位的暗层（正中是 0）；两者之间随点亮系数过渡
     const dim = Math.max(pose.shade, DIM_SHADE);
-    style.setProperty('--shade', String(dim + (pose.shade - dim) * brightness));
+    const shade = (dim + (pose.shade - dim) * brightness) * (1 - HOVER_BRIGHTEN * lift);
+    style.setProperty('--shade', String(shade));
     style.setProperty('--center', String(Math.max(0, 1 - Math.abs(d))));
     card.element.dataset.side = d < 0 ? 'left' : 'right';
   }
 
   function paintAt(now: number): void {
-    const pos = positionAt(now);
     const velocity = frozenAt !== null ? 0 : velocityAt(now);
     const dt = Number.isFinite(lastPaint) ? Math.min(100, Math.max(0, now - lastPaint)) : 0;
     lastPaint = now;
+    if (held && frozenAt === null) {
+      const ease = reduced || !visible ? 1 : 1 - Math.exp(-dt / HELD_EASE_MS);
+      held.shown += (held.pos - held.shown) * ease;
+    }
+    const pos = held && frozenAt === null ? held.shown : positionAt(now);
     // frozen while leaving, like the position
     const follow =
       frozenAt !== null ? 0 : reduced || !visible ? 1 : 1 - Math.exp(-dt / MOTION_TAU_MS);
@@ -269,6 +300,8 @@ export function createCoverflowEngine(
     }
     // 减弱动效与窗口看不见时不过渡，直接到位；退场期间遮罩定住不变
     const rate = frozenAt !== null ? 0 : reduced || !visible ? 1 : 1 - Math.exp(-dt / LIT_TAU_MS);
+    const liftRate =
+      frozenAt !== null ? 0 : reduced || !visible ? 1 : 1 - Math.exp(-dt / HOVER_TAU_MS);
     for (const card of cards) {
       const goal = litGoal(card);
       const before = lit.get(card.key);
@@ -276,7 +309,12 @@ export function createCoverflowEngine(
       const stepped = before === undefined ? goal : before + (goal - before) * rate;
       const next = Math.abs(goal - stepped) < LIT_EPSILON ? goal : stepped;
       lit.set(card.key, next);
-      write(card, card.index - pos, now, next, motion);
+      const goalLift = liftGoal(card);
+      const steppedLift = (lifted.get(card.key) ?? 0) * (1 - liftRate) + goalLift * liftRate;
+      const lift = Math.abs(goalLift - steppedLift) < LIT_EPSILON ? goalLift : steppedLift;
+      if (lift === 0) lifted.delete(card.key);
+      else lifted.set(card.key, lift);
+      write(card, card.index - pos, now, next, motion, lift);
     }
   }
 
@@ -367,7 +405,12 @@ export function createCoverflowEngine(
         held = { ...held, pos };
       } else {
         const measured = dt > 0 ? ((pos - before.pos) / dt) * 1000 : before.velocity;
-        held = { pos, velocity: before.velocity * 0.5 + measured * 0.5, time: now };
+        held = {
+          pos,
+          velocity: before.velocity * 0.5 + measured * 0.5,
+          time: now,
+          shown: held?.shown ?? before.pos,
+        };
       }
       glide = null;
       schedule();
@@ -375,7 +418,7 @@ export function createCoverflowEngine(
     release(target) {
       if (!held || frozenAt !== null) return;
       const now = clock.now();
-      const from = held.pos;
+      const from = held.shown;
       const velocity = velocityAt(now);
       held = null;
       rest = target;
@@ -388,6 +431,11 @@ export function createCoverflowEngine(
       glide = startGlide(from, target, now, velocity);
       schedule();
     },
+    hover(key) {
+      if (key === hovered) return;
+      hovered = key;
+      schedule();
+    },
     jumpTo(target) {
       glide = null;
       held = null;
@@ -397,6 +445,7 @@ export function createCoverflowEngine(
       cards = next;
       const keys = new Set(next.map((card) => card.key));
       for (const key of lit.keys()) if (!keys.has(key)) lit.delete(key);
+      for (const key of lifted.keys()) if (!keys.has(key)) lifted.delete(key);
     },
     setGeometry(next) {
       geometry = next;
@@ -422,7 +471,11 @@ export function createCoverflowEngine(
       const velocity = velocityAt(now);
       if (held) {
         // the fingers carry on from the same cover in the new list
-        held = { ...held, pos: reanchor(previous, held.pos, next, target) };
+        held = {
+          ...held,
+          pos: reanchor(previous, held.pos, next, target),
+          shown: reanchor(previous, held.shown, next, target),
+        };
         rest = target;
         return;
       }

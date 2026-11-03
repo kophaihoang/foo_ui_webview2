@@ -366,6 +366,32 @@ describe('follow / release: the covers follow the fingers on a touchpad', () => 
   });
 });
 
+describe('hover: the card under the pointer lifts toward the viewer', () => {
+  it('lifts when still, settles back exactly when the pointer leaves', () => {
+    const { engine, elements, advance, hasFrame } = setup(5);
+    engine.jumpTo(2);
+    engine.paint();
+    const side = elements[3] as CardElement;
+    const before = side.style.transform;
+    engine.hover('k3');
+    advance(600);
+    expect(side.style.transform).toContain('translateY(');
+    expect(hasFrame()).toBe(false);
+    engine.hover(null);
+    advance(600);
+    expect(side.style.transform).toBe(before);
+  });
+
+  it('nothing lifts while the covers glide', () => {
+    const { engine, elements, advance } = setup(5);
+    engine.jumpTo(2);
+    engine.hover('k3');
+    engine.goTo(3);
+    advance(48);
+    expect(elements[3]?.style.transform).not.toContain('translateY(');
+  });
+});
+
 describe('rekey：条目表重排后卡留在原地', () => {
   it('前面多了一条，选中项的下标后移，位置跟着，卡不动', () => {
     const { engine, elements, cards } = setup(3);

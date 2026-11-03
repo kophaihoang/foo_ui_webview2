@@ -107,8 +107,15 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
   const root = useRef<HTMLDivElement>(null);
   const elements = useRef(new Map<string, HTMLElement>());
   const settle = useRef<() => void>(() => {});
+  const hoverNow = useRef<() => void>(() => {});
   const [engine] = useState(() =>
-    createCoverflowEngine(browserClock, { onSettle: () => settle.current() }),
+    createCoverflowEngine(browserClock, {
+      onSettle: () => {
+        settle.current();
+        // the covers moved under a still pointer: find the one under it now
+        hoverNow.current();
+      },
+    }),
   );
   const [stepper] = useState(createWheelStepper);
   const [menu, setMenu] = useState<CoverflowMenuTarget | null>(null);
@@ -413,6 +420,16 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
     for (const [key, card] of elements.current) if (card === element) return key;
     return null;
   };
+  // ── hover: the card under the mouse lifts toward the viewer ──
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const hoverAt = () => {
+    const at = pointer.current;
+    const card = at && document.elementFromPoint(at.x, at.y)?.closest(`.${styles.card}`);
+    engine.hover(card ? keyOfElement(card) : null);
+  };
+  useLayoutEffect(() => {
+    hoverNow.current = hoverAt;
+  });
   /** The gap the pointer is over, on either side of the playing song, and where to draw the marker */
   const gapAt = (x: number, skip: string): Pick<DragView, 'bar'> & { gap: number | null } => {
     const box = root.current?.getBoundingClientRect();
@@ -546,6 +563,12 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
           };
         }}
         onPointerMove={(event) => {
+          if (event.pointerType === 'mouse') {
+            pointer.current = { x: event.clientX, y: event.clientY };
+            const card =
+              event.target instanceof Element ? event.target.closest(`.${styles.card}`) : null;
+            engine.hover(card ? keyOfElement(card) : null);
+          }
           const pressed = press.current;
           if (!pressed || pressed.id !== event.pointerId) return;
           if (dragging.current) {
@@ -582,6 +605,10 @@ export function Coverflow({ leaving = false }: CoverflowProps) {
             sink: false,
           });
           moveDrag(event.clientX, event.clientY);
+        }}
+        onPointerLeave={() => {
+          pointer.current = null;
+          engine.hover(null);
         }}
         onPointerUp={() => endDrag(true)}
         onPointerCancel={() => endDrag(false)}
