@@ -84,6 +84,7 @@ double tagBpm(const metadb_handle_ptr& track, pfc::string8& isrc) {
 }
 
 void lookupLoop() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     static const std::regex bpmField("\"bpm\"\\s*:\\s*([0-9.]+)");
     for (;;) {
         std::pair<std::string, std::string> job;

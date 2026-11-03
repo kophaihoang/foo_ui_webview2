@@ -27,7 +27,7 @@
 #include "mix.h"
 #include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.3.2",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.3.3",
     "DJ-style transitions between tracks.\n"
     "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
     "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
@@ -64,6 +64,7 @@ constexpr double kPrepareLeadSeconds = 20;  // the next track is predicted and d
 constexpr double kRecheckLeadSeconds = 2;  // ...and checked once more this long before
 constexpr double kLastAskSeconds = 4;  // an unknown next track is asked for again until this long before the plain transition
 constexpr double kShortestSeconds = 2;  // a transition prepared late is shortened, but not below this
+constexpr double kSettleSeconds = 10;  // a track's analysis starts this long after it starts
 
 void log(const char* msg) { FB2K_console_formatter() << "AutoMix: " << msg; }
 
@@ -210,7 +211,11 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
     unsigned channelConfig) {
     Plan& p = *plan;
     abort_callback& abort = p.abort;
+    // stay out of the way of playback: a track change is busy (the next file opens, the theme decodes it
+    // for its waveform), so the analysis waits a little and never competes with the playback thread
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     try {
+        abort.sleep(kSettleSeconds);
         Settings s;
         s.seconds = (double)g_cfgSeconds.get();
         s.bassCut = (double)g_cfgBassCut.get() / 100;
