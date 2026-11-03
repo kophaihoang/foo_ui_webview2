@@ -35,7 +35,13 @@ std::set<std::string> g_asked;
 std::condition_variable g_wake;
 std::thread g_worker;
 bool g_quitting = false;
-abort_callback_impl g_abort;
+
+// created on first use: its constructor asks foobar2000 for a service, which isn't there yet while the DLL
+// loads; never destroyed, as its destructor would run after those services are gone
+abort_callback_impl& lookupAbort() {
+    static auto* abort = new abort_callback_impl;
+    return *abort;
+}
 
 std::string keyOf(const metadb_handle_ptr& track) {
     return std::string(track->get_path()) + "|" + std::to_string(track->get_subsong_index());
@@ -92,10 +98,10 @@ void lookupLoop() {
         try {
             pfc::string8 url = "https://api.deezer.com/track/isrc:";
             url << job.second.c_str();
-            file::ptr f = http_client::get()->create_request("GET")->run(url, g_abort);
+            file::ptr f = http_client::get()->create_request("GET")->run(url, lookupAbort());
             std::string body;
             char buf[4096];
-            for (size_t n; (n = f->read(buf, sizeof buf, g_abort)) > 0;) body.append(buf, n);
+            for (size_t n; (n = f->read(buf, sizeof buf, lookupAbort())) > 0;) body.append(buf, n);
             std::smatch m;
             if (std::regex_search(body, m, bpmField)) bpm = std::atof(m[1].str().c_str());
         } catch (exception_aborted const&) {
@@ -107,7 +113,7 @@ void lookupLoop() {
             std::lock_guard<std::mutex> lock(g_lock);
             if (g_cache[job.first].source != 'L') storeLocked(job.first, Entry{bpm, 'D'});
         }
-        if (!g_abort.sleep_ex(kLookupGapSeconds)) return;
+        if (!lookupAbort().sleep_ex(kLookupGapSeconds)) return;
     }
 }
 
@@ -125,7 +131,7 @@ public:
             std::lock_guard<std::mutex> lock(g_lock);
             g_quitting = true;
         }
-        g_abort.abort();
+        lookupAbort().abort();
         g_wake.notify_all();
         if (g_worker.joinable()) g_worker.join();
     }

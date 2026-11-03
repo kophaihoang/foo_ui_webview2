@@ -27,7 +27,7 @@
 #include "mix.h"
 #include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.3.0",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.3.1",
     "DJ-style transitions between tracks.\n"
     "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
     "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
