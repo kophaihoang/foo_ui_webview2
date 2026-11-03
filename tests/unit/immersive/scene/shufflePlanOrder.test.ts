@@ -4,6 +4,7 @@ import {
   playingPosition,
   moveInPlan,
   retireInPlan,
+  stackOrder,
   type PlanEntry,
 } from '../../../../src/immersive/scene/shufflePlan.ts';
 
@@ -125,5 +126,33 @@ describe('planEntryFor / playingPosition', () => {
     expect(playingPosition(plan, 'h-c')).toBe(2);
     expect(playingPosition(plan, 'h-d')).toBe(3);
     expect(playingPosition(plan, 'h-x')).toBe(3);
+  });
+});
+
+describe('stackOrder: a playlist started on top of the plan', () => {
+  const song = (name: string) => ({ handle: `h-${name}`, path: `p-${name}` }) as never;
+  // old playlist rows 0..5 = a..f; played a b (cursor 2), still to come c d e f
+  const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const trackOf = (entry: PlanEntry) =>
+    entry.row !== null ? song(names[entry.row]!) : entry.track;
+  const top = deck(10, 11);
+  const paths = (order: readonly PlanEntry[]) =>
+    order.map((entry) => (entry.row === null ? entry.path : entry.row));
+
+  it('the new deal plays next, then the rest of the old one by path, each song once', () => {
+    const stacked = stackOrder(deck(0, 1, 2, 3, 4, 5), 2, trackOf, top, new Set(['h-d', 'h-a']));
+    expect(paths(stacked.order)).toEqual(['p-a', 'p-b', 10, 11, 'p-c', 'p-e', 'p-f']);
+    expect(stacked.cursor).toBe(2);
+  });
+
+  it('cards keep their ids, and songs with no metadata drop out', () => {
+    const stacked = stackOrder(
+      deck(0, 1, 2, 3),
+      1,
+      (e) => (e.row === 2 ? undefined : trackOf(e)),
+      top,
+      new Set(),
+    );
+    expect(stacked.order.map((entry) => entry.id)).toEqual([100, 110, 111, 101, 103]);
   });
 });

@@ -13,9 +13,11 @@ import {
 /**
  * Shuffle plan: in a random playback order foobar2000 picks the next song only when the current one ends,
  * so nothing can be shown ahead of it (nor mixed into, for AutoMix). The theme deals the order itself,
- * like shuffling a deck: every song of the playing playlist once, then a fresh deal, forever. Only the very
- * next song is put in the playback queue, so what the coverflow shows is what really plays, and the queue
- * stays one song long. Songs the user queued by hand play first; the plan carries on after them.
+ * like shuffling a deck: every song of the playing playlist once, then playback stops. A playlist started
+ * while songs are still to come is dealt on top of them: its songs play first, then the rest, and a song in
+ * both comes up once. Only the very next song is put in the playback queue, so what the coverflow shows is
+ * what really plays, and the queue stays one song long. Songs the user queued by hand play first; the plan
+ * carries on after them.
  *
  * Most entries are rows of the playing playlist. A song dragged in from elsewhere (one from the history)
  * is kept by path and queued by path when its turn comes.
@@ -43,7 +45,7 @@ const withId = (entry: NewPlanEntry): PlanEntry => ({ ...entry, id: nextId++ }) 
 export interface ShufflePlan {
   readonly guid: string;
   readonly count: number;
-  /** What will play, in order; grows by whole deals as the coverflow scrolls on */
+  /** Played songs, then what will play, in order; every song once */
   readonly order: readonly PlanEntry[];
   /** Position in `order` of the next song to play */
   readonly cursor: number;
@@ -61,7 +63,7 @@ export interface PlannedRow {
   /** Playlist row; null for a song kept by path */
   readonly row: number | null;
   readonly track: UpNextTrack;
-  /** Position in the plan; keeps keys unique when a row comes round again in a later deal */
+  /** Position in the plan */
   readonly position: number;
 }
 
@@ -113,18 +115,37 @@ export const plannedRowsAtom: Atom<readonly PlannedRow[]> = atom((get) => {
   return rows;
 });
 
-function deal(count: number, avoidFirst: readonly PlanEntry[]): PlanEntry[] {
+function deal(count: number): PlanEntry[] {
   const rows = Array.from({ length: count }, (_, row) => row);
   for (let i = rows.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [rows[i], rows[j]] = [rows[j] as number, rows[i] as number];
   }
-  // don't start a new deal with a song that has just played
-  const recent = new Set(avoidFirst.map((entry) => entry.row));
-  for (let i = 0; i < Math.min(rows.length, 8) && recent.has(rows[0] as number); i++) {
-    rows.push(rows.shift() as number);
-  }
   return rows.map((row) => withId({ row }));
+}
+
+/**
+ * A playlist started on top of the plan: its deal (`top`) plays first, then the songs the plan still had to
+ * come, kept by path as they belong to the old playlist. Those of the new one (`skip`, by handle) leave the
+ * rest, so every song comes up once. The played side stays, by path too
+ */
+export function stackOrder(
+  order: readonly PlanEntry[],
+  cursor: number,
+  trackOf: (entry: PlanEntry) => UpNextTrack | undefined,
+  top: readonly PlanEntry[],
+  skip: ReadonlySet<string>,
+): { order: PlanEntry[]; cursor: number } {
+  const byPath = (entry: PlanEntry): PlanEntry[] => {
+    const track = trackOf(entry);
+    return track ? [{ id: entry.id, row: null, path: track.path, track }] : [];
+  };
+  const played = order.slice(Math.max(0, cursor - HISTORY_SHOWN), cursor).flatMap(byPath);
+  const rest = order
+    .slice(cursor)
+    .flatMap(byPath)
+    .filter((entry) => entry.row !== null || !skip.has(entry.track.handle));
+  return { order: [...played, ...top, ...rest], cursor: played.length };
 }
 
 const keyOf = (entry: PlanEntry): string =>
@@ -233,7 +254,7 @@ export function planEntryFor(
 }
 
 export interface ShufflePlanService {
-  /** Make sure metadata is in for the next `ahead` songs, dealing more of the deck when needed */
+  /** Make sure metadata is in for the next `ahead` songs */
   ensure(ahead: number): void;
   /** Play the planned song at `position`; the plan jumps there and the queue follows */
   playAt(position: number): Promise<boolean>;
@@ -275,6 +296,8 @@ export function startShufflePlan(store: Store): ShufflePlanService {
   let reading = false;
   /** A song picked in the coverflow, until it starts playing */
   let jump: { position: number } | null = null;
+  /** Stop after current is on because the plan's last song is playing */
+  let stopping = false;
 
   const isRandom = () => {
     const order = store.get(playbackOrderAtom);
@@ -284,8 +307,59 @@ export function startShufflePlan(store: Store): ShufflePlanService {
   async function fresh(guid: string, playingRow: number | null): Promise<ShufflePlan | null> {
     const counted = await settle(() => fb.playlist.getCount(guid));
     if (!counted?.success || counted.count < 2) return null;
-    const order = deal(counted.count, []).filter((entry) => entry.row !== playingRow);
+    const order = deal(counted.count).filter((entry) => entry.row !== playingRow);
     return { guid, count: counted.count, order, cursor: 0, tracks: new Map() };
+  }
+
+  /** Metadata of `rows` of a playlist, read in batches; null when a read fails */
+  async function readAll(
+    guid: string,
+    rows: readonly number[],
+  ): Promise<Map<number, UpNextTrack> | null> {
+    const tracks = new Map<number, UpNextTrack>();
+    for (let i = 0; i < rows.length; i += READ_BATCH) {
+      const answer = await settle(() =>
+        fb.playlist.getTracksAt(guid, rows.slice(i, i + READ_BATCH), undefined, [
+          ...UP_NEXT_FIELDS,
+        ]),
+      );
+      if (disposed || !answer?.success) return null;
+      for (const track of answer.tracks) {
+        if (typeof track.index === 'number') tracks.set(track.index, upNextTrackOf(track));
+      }
+    }
+    return tracks;
+  }
+
+  /** A playlist started while the plan is on: its deal goes on top of what the plan still had to come */
+  async function stack(
+    old: ShufflePlan,
+    guid: string,
+    playingRow: number | null,
+    playingHandle: string,
+  ): Promise<ShufflePlan | null> {
+    const top = await fresh(guid, playingRow);
+    if (!top) return null;
+    const tracks = await readAll(
+      guid,
+      Array.from({ length: top.count }, (_, row) => row),
+    );
+    if (!tracks) return null;
+    const unread = old.order
+      .slice(old.cursor)
+      .flatMap((entry) => (entry.row !== null && !old.tracks.has(entry.row) ? [entry.row] : []));
+    const more = (await readAll(old.guid, unread)) ?? new Map<number, UpNextTrack>();
+    const trackOf = (entry: PlanEntry) =>
+      entry.row !== null ? (old.tracks.get(entry.row) ?? more.get(entry.row)) : entry.track;
+    const skip = new Set([playingHandle, ...[...tracks.values()].map((track) => track.handle)]);
+    return { ...top, ...stackOrder(old.order, old.cursor, trackOf, top.order, skip), tracks };
+  }
+
+  /** Stop after the plan's last song, or no longer when songs came in after it */
+  async function stopAfterLast(last: boolean): Promise<void> {
+    if (last === stopping) return;
+    stopping = last;
+    await settle(() => fb.player.setStopAfterCurrent(last));
   }
 
   /** Bring the plan in line with what is playing, then keep the next planned song queued */
@@ -310,6 +384,7 @@ export function startShufflePlan(store: Store): ShufflePlanService {
     const current = store.get(currentTrackAtom);
     if (!isRandom() || current === null) {
       store.set(planAtom, null);
+      await stopAfterLast(false);
       return;
     }
     const playing = await settle(() => fb.player.getPlayingPlaylist());
@@ -321,8 +396,10 @@ export function startShufflePlan(store: Store): ShufflePlanService {
     // a song the plan queued by path plays without moving foobar2000 off the plan's playlist; any other
     // change of playlist means the user started somewhere else, and the deck is dealt from there
     const ours = queuedByPlan !== null && queuedByPlan.handle === current.handle;
-    if (!plan || (plan.guid !== playing.playlistGuid && !ours)) {
+    if (!plan) {
       plan = await fresh(playing.playlistGuid, playingRow);
+    } else if (plan.guid !== playing.playlistGuid && !ours) {
+      plan = await stack(plan, playing.playlistGuid, playingRow, current.handle);
     }
     if (!plan || disposed) return;
     const counted = await settle(() => fb.playlist.getCount(plan!.guid));
@@ -343,10 +420,15 @@ export function startShufflePlan(store: Store): ShufflePlanService {
     } else if (isPlaying(plan.order[plan.cursor])) {
       plan = { ...plan, cursor: plan.cursor + 1 };
     }
-    if (plan.cursor >= plan.order.length) {
-      plan = { ...plan, order: [...plan.order, ...deal(plan.count, plan.order.slice(-8))] };
+    // every song came up: a song started after the last one deals the playlist anew
+    if (plan.cursor >= plan.order.length && !isPlaying(plan.order[plan.cursor - 1])) {
+      plan = await fresh(plan.guid, playingRow);
+      if (!plan || disposed) return;
     }
     store.set(planAtom, plan);
+    await stopAfterLast(
+      plan.cursor >= plan.order.length && store.get(queueViewAtom).entries.length === 0,
+    );
 
     const next = plan.order[plan.cursor];
     if (next === undefined) return;
@@ -407,15 +489,8 @@ export function startShufflePlan(store: Store): ShufflePlanService {
   /** Read the metadata missing between the cursor and `wanted` songs ahead */
   function fill(): void {
     if (reading || disposed) return;
-    let plan = store.get(planAtom);
+    const plan = store.get(planAtom);
     if (!plan) return;
-    while (plan.order.length < plan.cursor + wanted + 1) {
-      plan = { ...plan, order: [...plan.order, ...deal(plan.count, plan.order.slice(-8))] };
-    }
-    if (plan !== store.get(planAtom)) {
-      store.set(planAtom, plan);
-      return;
-    }
     const missing: number[] = [];
     const seen = new Set<number>();
     for (let p = plan.cursor; p <= plan.cursor + wanted && missing.length < READ_BATCH; p++) {
