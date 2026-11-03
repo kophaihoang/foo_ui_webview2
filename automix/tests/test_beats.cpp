@@ -32,8 +32,7 @@ int main() {
     std::fflush(stdout);
     assert(std::fabs(b.bpm - 120) < 1);
     assert(b.steady());
-    std::printf("grid: %.2f BPM, fit error %.3f beats, downbeat offset %d
-", b.bpm, b.fitError, b.downOffset);
+    std::printf("grid: %.2f BPM, fit error %.3f beats, downbeat offset %d\n", b.bpm, b.fitError, b.downOffset);
     std::fflush(stdout);
     assert(std::fabs(b.bpm - 120) < 0.5 && b.fitError < 0.02);
     // the grid's bar lines land on the accented kicks (every 4th beat, from 0 s)
