@@ -77,6 +77,32 @@ Beats analyseBeats(const float* data, size_t frames, unsigned channels, unsigned
     mean /= iv.size();
     for (double x : iv) var += (x - mean) * (x - mean);
     r.spread = std::sqrt(var / iv.size()) / mean;
+
+    // one steady grid through the beats: number them by the median interval (so a missed or doubled beat
+    // keeps the count right), then a least-squares line through (number, frame)
+    std::vector<double> num(r.frames.size());
+    for (size_t i = 0; i < num.size(); ++i) num[i] = std::round((r.frames[i] - r.frames[0]) / median);
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    const double cnt = (double)num.size();
+    for (size_t i = 0; i < num.size(); ++i) {
+        sx += num[i];
+        sy += r.frames[i];
+        sxx += num[i] * num[i];
+        sxy += num[i] * r.frames[i];
+    }
+    r.period = (cnt * sxy - sx * sy) / (cnt * sxx - sx * sx);
+    r.phase = (sy - r.period * sx) / cnt;
+    double err = 0;
+    for (size_t i = 0; i < num.size(); ++i) {
+        const double e = r.frames[i] - (r.phase + r.period * num[i]);
+        err += e * e;
+    }
+    r.fitError = std::sqrt(err / cnt) / r.period;
+    r.bpm = 60.0 * rate / r.period;
+    // the bar's first beat: the grid position most downbeats agree on
+    int votes[4] = {};
+    for (int d : r.downbeats) ++votes[(int)num[(size_t)d] % 4];
+    r.downOffset = (int)(std::max_element(votes, votes + 4) - votes);
     return r;
 }
 

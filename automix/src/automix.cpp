@@ -27,7 +27,7 @@
 #include "mix.h"
 #include "transition.h"
 
-DECLARE_COMPONENT_VERSION("AutoMix", "0.3.3",
+DECLARE_COMPONENT_VERSION("AutoMix", "0.4.0",
     "DJ-style transitions between tracks.\n"
     "Beat-matched when the tracks allow it (tempo glide, bars lined up, bass swap), "
     "otherwise an equal-power overlap with a gradual bass cut. Silence at both ends is skipped.\n"
@@ -256,8 +256,11 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
             oldPlan = planOldSide(old, end, oldBeats, s.bars);
             if (oldBeats.steady()) learnBpm(current, oldBeats.bpm);
         }
+        // a song loud to its last note gets a short overlap, a quiet outro a longer one (up to the setting)
+        const double outro = quietOutroSeconds(old, end);
+        s.seconds = std::clamp(outro, kShortestSeconds, s.seconds);
         const int64_t plainStart = (std::max)(old.start, end - std::llround(s.seconds * rate));
-        const int64_t earliest = oldPlan.overlapBeat >= 0 ? (std::min)(oldPlan.renderStart, plainStart) : plainStart;
+        const int64_t earliest = oldPlan.ok ? (std::min)(oldPlan.renderStart, plainStart) : plainStart;
 
         // 2. which track comes next
         waitForPos(p, earliest - (int64_t)(kPrepareLeadSeconds * rate));
@@ -336,7 +339,8 @@ void prepare(std::shared_ptr<Plan> plan, metadb_handle_ptr current, unsigned rat
             line << "AutoMix: sẵn sàng chuyển sang \"" << next.handle << "\": " << t.summary.c_str();
             if (beatMatch && !beat) line << " (không khớp nhịp: " << why.c_str() << ")";
             line << ", bỏ " << pfc::format_float((double)skip / head.rate, 0, 1) << " s im lặng đầu, "
-                 << pfc::format_float(length - (double)end / rate, 0, 1) << " s im lặng cuối";
+                 << pfc::format_float(length - (double)end / rate, 0, 1) << " s im lặng cuối, outro "
+                 << pfc::format_float(outro, 0, 1) << " s";
             if (head.rate != rate) line << ", đổi " << head.rate << " → " << rate << " Hz";
         }
 
