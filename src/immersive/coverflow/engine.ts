@@ -113,11 +113,13 @@ const GATHER_MS = 220;
 /** After a fold the fan-out starts this soon, ms (entering waits for the shared cover glide instead) */
 const REGATHER_DELAY_MS = 40;
 const LIT_EPSILON = 0.005;
-/** While gliding the covers lean into the motion and sink back a little, by speed (items/s) */
-const LEAN_DEG_PER_SPEED = 2;
-const LEAN_MAX_DEG = 12;
-const SINK_PER_SPEED = 0.012;
-const SINK_MAX = 0.08;
+/** While gliding the covers lean into the motion, sink back and spread apart, by speed (items/s) */
+const LEAN_DEG_PER_SPEED = 5;
+const LEAN_MAX_DEG = 30;
+const SINK_PER_SPEED = 0.035;
+const SINK_MAX = 0.2;
+const STRETCH_PER_SPEED = 0.03;
+const STRETCH_MAX = 0.2;
 
 export function createCoverflowEngine(
   clock: EngineClock,
@@ -171,10 +173,11 @@ export function createCoverflowEngine(
     const slot = slotAt(d);
     const lean = Math.max(-LEAN_MAX_DEG, Math.min(LEAN_MAX_DEG, -velocity * LEAN_DEG_PER_SPEED));
     const sink = 1 - Math.min(SINK_MAX, Math.abs(velocity) * SINK_PER_SPEED);
+    const stretch = 1 + Math.min(STRETCH_MAX, Math.abs(velocity) * STRETCH_PER_SPEED);
     // 间距在入场插值之前收紧，飞入的终点才是收紧后的槽位
     let pose = {
       ...slot,
-      offset: slot.offset * geometry.spread,
+      offset: slot.offset * geometry.spread * stretch,
       tilt: slot.tilt + lean,
       size: slot.size * sink,
     };
