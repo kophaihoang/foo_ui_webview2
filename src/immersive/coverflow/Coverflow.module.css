@@ -19,27 +19,15 @@
   place-items: center;
   width: var(--cf-cover);
   height: var(--cf-cover);
+  overflow: hidden;
   border-radius: calc(var(--cf-cover) * 0.0375);
   background: var(--bg-surface);
   color: var(--text-muted);
-  box-shadow: 0 13px 14px var(--scene-shadow, var(--colorNeutralShadowKeyDarker));
+  box-shadow: 0 calc(13px + 7px * var(--center, 0)) calc(14px + 34px * var(--center, 0))
+    var(--scene-shadow, var(--colorNeutralShadowKeyDarker));
   cursor: pointer;
   will-change: transform, opacity;
   transition: scale var(--motion-faster) var(--curveLinear);
-}
-
-/* the deeper shadow near the selected one: its own layer that only fades (--center), so the shadow is
-   never drawn again while the covers move */
-.card::after {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  box-shadow: 0 20px 48px var(--scene-shadow, var(--colorNeutralShadowKeyDarker));
-  opacity: var(--center, 0);
-  pointer-events: none;
-  content: '';
-  will-change: opacity;
 }
 
 /* 选中的那张被左键或右键按住时略微缩小：scale 属性叠在引擎逐帧写的 transform 之外，两者互不覆盖 */
@@ -58,7 +46,6 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  border-radius: inherit;
   object-fit: cover;
   opacity: 0;
   transition: opacity var(--motion-faster) var(--curveLinear);
@@ -77,11 +64,8 @@
 .shade {
   position: absolute;
   inset: 0;
-  border-radius: inherit;
   pointer-events: none;
   opacity: var(--shade, 0);
-  /* its own layer: --shade changes every frame and must not redraw the cover */
-  will-change: opacity;
   background: linear-gradient(to right, transparent, var(--colorNeutralBackground5));
 }
 
