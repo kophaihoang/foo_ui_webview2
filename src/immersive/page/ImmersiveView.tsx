@@ -23,7 +23,6 @@ import { ImmersiveControls } from './ImmersiveControls.tsx';
 import type { ImmersiveScene } from './immersivePrefs.ts';
 import { PresetsScene } from './PresetsScene.tsx';
 import styles from './ImmersiveView.module.css';
-import { startShufflePlan } from '../scene/shufflePlan.ts';
 import { cycleNext, isCycleTarget } from './viewCycle.ts';
 
 const COVERFLOW = '[data-scene-element="coverflow"]';
@@ -126,13 +125,6 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
   useEffect(() => {
     if (!current) return;
     return handleViewCycle(() => cycleNext(store));
-  }, [current, store]);
-
-  // shuffle plan: deal the upcoming songs ahead while the view is up (random playback order only)
-  useEffect(() => {
-    if (!current) return;
-    const plan = startShufflePlan(store);
-    return () => plan.dispose();
   }, [current, store]);
 
   // clear glass: the window turns to glass while the view is up (the rest of the app keeps Mica), and the main

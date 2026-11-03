@@ -30,6 +30,7 @@ import { genresSubject } from '../library/genres/genresSubject.ts';
 import { startMainMenu, mainMenuKey } from '../shell/mainMenu.ts';
 import { loadMotionChoice, watchReducedMotion } from '../motion/reducedMotion.ts';
 import { startNowPlaying } from '../playback/now-playing/nowPlaying.ts';
+import { startShufflePlan } from '../immersive/scene/shufflePlan.ts';
 import { startNowPlayingMenu, nowPlayingMenuKey } from '../playback/now-playing/nowPlayingMenu.ts';
 import { startOutputDevices, outputDevicesKey } from '../shell/player/volume/outputDevices.ts';
 import { startPlayback } from '../playback/playback.ts';
@@ -249,6 +250,8 @@ export function startServices(dataWriter: BrowserDataWriter, prefs: PagePrefStor
   scope.add(positionClockKey, startPositionClock());
   loadVolumeScale(store);
   scope.own(startNowPlaying(store, artwork));
+  // shuffle plan: random playback keeps its next song queued in every view, so AutoMix knows what comes next
+  scope.own(startShufflePlan(store));
   const windowShell = scope.add(windowShellKey, startWindowShell(store));
   scope.own(startWindowActivity(store, windowShell));
   scope.add(miniWindowKey, startMiniWindow(store, prefs, windowShell));

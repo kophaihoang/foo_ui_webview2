@@ -12,7 +12,7 @@ import {
 
 /**
  * Shuffle plan: in a random playback order foobar2000 picks the next song only when the current one ends,
- * so nothing can be shown ahead of it. While the immersive view is open the theme deals the order itself,
+ * so nothing can be shown ahead of it (nor mixed into, for AutoMix). The theme deals the order itself,
  * like shuffling a deck: every song of the playing playlist once, then a fresh deal, forever. Only the very
  * next song is put in the playback queue, so what the coverflow shows is what really plays, and the queue
  * stays one song long. Songs the user queued by hand play first; the plan carries on after them.
@@ -260,7 +260,7 @@ export interface ShufflePlanService {
 
 let active: ShufflePlanService | null = null;
 
-/** The plan running for the open immersive view, if any */
+/** The running plan, if any (it runs for the whole app, so the queue is always one song ahead) */
 export function activeShufflePlan(): ShufflePlanService | null {
   return active;
 }
