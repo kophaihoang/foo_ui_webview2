@@ -41,6 +41,11 @@ export const MINI_PLAYER_SIZE = {
 } as const;
 /** 紧凑形态下展开上下文菜单时的临时窗口自适应高度（CSS 像素） */
 export const MINI_MENU_HEIGHT = 292;
+/**
+ * The main window's minimum size, DIPs: next to no limit (the host's own default is 400 × 300 physical px).
+ * The immersive view shrinks to fit, see `ImmersiveView`
+ */
+export const MAIN_MIN_SIZE = { width: 200, height: 150 } as const;
 
 export interface MiniWindowFace extends HostReadyFace {
   readonly ui: Pick<
@@ -243,6 +248,11 @@ export function startMiniWindow(
         update({ failure: 'restore' });
       }
     }
+    // after the restore, which puts back the minimum saved on entering; fails in panel mode, that's fine
+    if (ready && !disposed) {
+      await settle(() => host.ui.setMinSize(MAIN_MIN_SIZE.width, MAIN_MIN_SIZE.height));
+    }
+    if (disposed) return;
     update({ busy: false });
   }
 

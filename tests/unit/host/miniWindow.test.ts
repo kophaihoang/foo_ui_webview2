@@ -1,6 +1,6 @@
 import { createStore } from 'jotai/vanilla';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { miniWindowAtom, startMiniWindow } from '../../../src/host/miniWindow.ts';
+import { MAIN_MIN_SIZE, miniWindowAtom, startMiniWindow } from '../../../src/host/miniWindow.ts';
 import {
   MINI_POSITION_STORAGE_KEY,
   readMiniPosition,
@@ -185,7 +185,7 @@ describe('主窗口迷你模式', () => {
     expect(x.state()).toMatchObject({ active: false, busy: false, failure: null });
     expect(x.native()).toEqual({
       bounds: x.normal,
-      min: { width: 800, height: 500 },
+      min: MAIN_MIN_SIZE,
       max: { width: 1800, height: 1200 },
       resizable: true,
       maximized: false,
@@ -257,7 +257,7 @@ describe('主窗口迷你模式', () => {
     });
     await x.mini.enter();
     expect(x.state()).toMatchObject({ active: false, busy: false, failure: 'enter' });
-    expect(x.native()).toMatchObject({ resizable: true, min: { width: 800, height: 500 } });
+    expect(x.native()).toMatchObject({ resizable: true, min: MAIN_MIN_SIZE });
   });
 
   it('返回失败时保留恢复记录，下一次返回可以继续恢复', async () => {

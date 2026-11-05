@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FocusEvent,
   type RefObject,
 } from 'react';
@@ -16,6 +17,7 @@ import { reducedMotionAtom } from '../../motion/reducedMotion.ts';
 import { controlsVisibleAtom, type ImmersiveShell } from './immersiveShell.ts';
 import { attachImmersiveRoot } from './keyFocus.ts';
 import { PaperScene } from '../paper/PaperScene.tsx';
+import { useSceneSize } from '../paper/useSceneSize.ts';
 import { PerfOverlay } from '../perf/PerfOverlay.tsx';
 import { EntryStageContext, useEntryStages } from '../scene/entryStage.ts';
 import { ControlSlotsContext, type ControlSlots } from '../scene/sceneContext.ts';
@@ -28,6 +30,14 @@ import { cycleNext, isCycleTarget } from './viewCycle.ts';
 const COVERFLOW = '[data-scene-element="coverflow"]';
 /** how long a double tap in Coverflow waits for a third tap before it switches view */
 const TRIPLE_TAP_WAIT_MS = 380;
+/** The view's design size, CSS px: a smaller window shows it scaled down, not laid out again */
+export const DESIGN_SIZE = { width: 1280, height: 800 } as const;
+
+/** How much the view shrinks to fit a window of `size`: 1 at the design size and above */
+export function fitScale(size: { readonly width: number; readonly height: number }): number {
+  if (size.width <= 0 || size.height <= 0) return 1;
+  return Math.min(1, size.width / DESIGN_SIZE.width, size.height / DESIGN_SIZE.height);
+}
 import { handleViewCycle } from '../scene/viewCycleRequest.ts';
 import { setImmersiveUp } from '../../theme/backdrop.ts';
 
@@ -112,6 +122,19 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
     [],
   );
   const { findFirstFocusable, findLastFocusable } = useFocusFinders();
+  // a window smaller than the design size shrinks the whole view like a picture instead of laying it out
+  // again: the content is laid out at least that big and scaled down to fit
+  const windowSize = useSceneSize(root);
+  const fit = fitScale(windowSize);
+  const fitted: CSSProperties | undefined =
+    fit < 1
+      ? {
+          width: windowSize.width / fit,
+          height: windowSize.height / fit,
+          transform: `scale(${fit})`,
+          transformOrigin: '0 0',
+        }
+      : undefined;
   const shown = controlsVisible || controlsFocused;
 
   const stage = useEntryStages(useViewMotion(root, current));
@@ -185,7 +208,7 @@ export function ImmersiveView({ shell, current, scene }: ImmersiveViewProps) {
       }}
     >
       <span className={styles.guard} tabIndex={0} aria-hidden onFocus={guard('start')} />
-      <div ref={content} className={styles.content} data-immersive-content>
+      <div ref={content} className={styles.content} style={fitted} data-immersive-content>
         <ControlSlotsContext value={slots}>
           <EntryStageContext value={stage}>
             {scene === 'paper' ? <PaperScene /> : <PresetsScene />}
