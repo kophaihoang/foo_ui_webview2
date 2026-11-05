@@ -1,19 +1,14 @@
-/* 舞台坐标：水平居中于 x 960，一行卡顶 1000、高 78，两行卡顶 964、高 114，底边都到 1078；两行卡顶在右栏
-   垫纸底边下方 8，卡不压右栏。卡宽由组件按字宽给。卡底是不透明的纸面色；不接指针，层位在右栏之上、传输键之下。 */
+/* 舞台坐标：卡与右栏垫纸同左缘（688）同宽（1124），顶在垫纸底边下方 8（964）、高 114，像垫纸的最后一行。
+   卡底是不透明的纸面色；不接指针，层位在右栏之上、传输键之下。 */
 .card {
   position: absolute;
-  left: 960px;
-  top: 1000px;
-  height: 78px;
-  translate: -50% 0;
+  left: 688px;
+  top: 964px;
+  width: 1124px;
+  height: 114px;
   z-index: 1;
   pointer-events: none;
   background: var(--paper-tint);
-}
-
-.card[data-two-line] {
-  top: 964px;
-  height: 114px;
 }
 
 /* 字按基线落位：字盒底边裁到字母基线，`top` 写的就是基线（相对卡顶） */
@@ -26,18 +21,19 @@
   text-box-edge: text alphabetic;
 }
 
-/* 正文限宽 1394，是卡宽上限减去左右内边距；字号由组件给 */
+/* 正文从 72 起，与右栏的字同一列；限宽 900（LYRIC_TEXT_WIDTH），不压右下的来源标；字号由组件给 */
 .main,
 .sub {
-  left: 46px;
-  max-width: 1394px;
+  left: 72px;
+  max-width: 900px;
   font-family: var(--fontFamilyBase);
   overflow-x: clip;
   text-overflow: ellipsis;
 }
 
+/* 一行时主行在卡里竖向居中 */
 .main {
-  top: 51px;
+  top: 70px;
   color: var(--paper-hot);
 }
 
@@ -55,8 +51,8 @@
 }
 
 .plain {
-  left: 46px;
-  top: 51px;
+  left: 72px;
+  top: 63px;
   font-family: var(--fontFamilyMonospace);
   font-size: 16px;
   color: var(--colorNeutralForeground3);

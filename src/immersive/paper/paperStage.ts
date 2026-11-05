@@ -122,6 +122,9 @@ export const STAGE_LAYOUT = {
   pad: STAGE_PAD,
 };
 
-/** 歌词卡的正文宽上限（卡宽上限 1520 减去左右内边距 46 与 46 + 34）与两行正文降字号的下限 */
-export const LYRIC_TEXT_WIDTH = 1394;
+/**
+ * 歌词卡的正文宽上限与两行正文降字号的下限. The card is as wide as the pad (1124); the text starts 72 in,
+ * where the fields do, and stops short of the source label at the bottom right
+ */
+export const LYRIC_TEXT_WIDTH = 900;
 export const LYRIC_FONT = { main: 38, minMain: 20, sub: 24, minSub: 16 } as const;
