@@ -2,6 +2,10 @@
 
 Read this whole file before touching anything. It is written for Claude Code picking up an ongoing project.
 
+**AutoMix is past §7 below:** versions 0.2–0.6.1 were built on branch `automix`, and 0.6.1 (a classic crossfade) is installed and works. The next step is a redo with a team of agents. Its plan, rules and criteria are in `AUTOMIX-REDO.md`, imported here:
+
+@AUTOMIX-REDO.md
+
 ## 1. Who the user is and how to work with them
 
 - The user (GitHub `kophaihoang`) writes in **Vietnamese** and wants replies in Vietnamese, short and plain.
